@@ -1,0 +1,166 @@
+# =========================
+
+# Build directories
+
+# =========================
+
+build/
+Build/
+bin/
+Bin/
+out/
+dist/
+sift/
+
+# =========================
+
+# Object files
+
+# =========================
+
+*.o
+*.obj
+*.lo
+*.slo
+
+# =========================
+
+# Static / Shared libraries
+
+# =========================
+
+*.a
+*.la
+*.lib
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# =========================
+
+# Executables
+
+# =========================
+
+*.exe
+*.out
+*.app
+
+# =========================
+
+# Debug / profiling
+
+# =========================
+
+*.dSYM/
+*.su
+*.idb
+*.pdb
+*.mod
+*.cmd
+*.gcno
+*.gcda
+*.gcov
+gmon.out
+perf.data
+perf.data.old
+
+# =========================
+
+# Logs & runtime files
+
+# =========================
+
+*.log
+*.pid
+*.seed
+*.core
+core.*
+
+# =========================
+
+# Editor / IDE files
+
+# =========================
+
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# =========================
+
+# CMake
+
+# =========================
+
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+cmake-build-*/
+
+# =========================
+
+# Autotools
+
+# =========================
+
+config.log
+config.status
+configure
+depcomp
+install-sh
+missing
+
+# =========================
+
+# pkg-config
+
+# =========================
+
+*.pc
+
+# =========================
+
+# Custom project outputs
+
+# =========================
+
+*.pcap
+*.csv
+
+# autotools
+autom4te.cache/
+aclocal.m4
+compile
+config.guess
+config.sub
+configure
+depcomp
+install-sh
+missing
+ltmain.sh
+
+# generated
+Makefile
+Makefile.in
+config.h
+config.h.in
+config.log
+config.status
+stamp-h1
+
+# build
+build/
+src/.deps/
+src/*.o
+src/*.Po
+src/.dirstamp
+
+# binaries
+radius_parser
