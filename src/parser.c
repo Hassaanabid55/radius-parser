@@ -1,18 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <signal.h>
-#include <string.h>
-#include <time.h>
-
-#include <net/ethernet.h>
-#include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <arpa/inet.h>
-
 #include "parser.h"
-#include "user_session.h"
-#include "radius_attribute_list.h"
 
 /*
  *   Extract IPv4 layer from Eth frame
@@ -115,9 +101,6 @@ const char *getRadiusAcctLayer(const char *pPacket, size_t len)
     if (remainingAfterUdp < sizeof(struct udphdr))
         return NULL;
 
-    if (getUdpDstPort(pUdpLayer) != RADIUS_ACCT_PORT)
-        return NULL;
-
     const char *pRadiusLayer = pUdpLayer + sizeof(struct udphdr);
 
     // Calculate remaining packet length
@@ -200,9 +183,7 @@ int parseRadiusPkt(const char *pPacket, size_t len, RadiusPacket *radiusPkt)
 
 int logInvalidAvp(uint8_t type, uint8_t len, uint16_t offset)
 {
-    fprintf(stderr,
-            "[RADIUS][ERROR] Invalid AVP - Type: %u, Length: %u, Offset: %u\n",
-            type, len, offset);
+    syslog(LOG_ERR, "Invalid AVP - Type: %u, Length: %u, Offset: %u", type, len, offset);
     return -1;
 }
 
@@ -224,6 +205,7 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
 
     memset(pSession, 0, sizeof(*pSession));
     pSession->nSessionIndicator = -1; // return value (SESSION_START / SESSION_STOP / SESSION_UPDATE)
+    pSession->extra_avp_count = 0;
 
     // Reset Session State before parsing new pkt
     pSession->u64ValidAttributes = 0;
@@ -251,21 +233,17 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         // Extract value section (after type + len)
         const uint8_t *value = p + 2;
         uint8_t valueLen = len - 2;
-
         switch (type)
         {
         case ACCT_STATUS_TYPE:
         {
-            // must be exact 4 bytes
             if (valueLen != 4)
                 return logInvalidAvp(type, len, offset);
 
             uint32_t v;
             memcpy(&v, value, sizeof(v));
 
-            // convert from network byte order
             pSession->u8AccountStatusType = (uint8_t)ntohl(v);
-            fprintf(stderr, "DEBUG: AccountStatusType = %u\n", pSession->u8AccountStatusType);
 
             // session state handling
             switch (pSession->u8AccountStatusType)
@@ -297,56 +275,11 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             uint8_t copyLen = valueLen < sizeof(pSession->acAccountSessionId) - 1
                                   ? valueLen
                                   : sizeof(pSession->acAccountSessionId) - 1;
-            memcpy(pSession->acAccountSessionId, value, copyLen);
 
+            memcpy(pSession->acAccountSessionId, value, copyLen);
             pSession->acAccountSessionId[copyLen] = '\0';
 
             pSession->u64ValidAttributes |= VALID_ACCT_SESSION_ID;
-            fprintf(stderr, "DEBUG: SessionId = %s\n", pSession->acAccountSessionId);
-            break;
-        }
-
-        case FRAMED_IP_ADDRESS:
-        {
-            if (valueLen != IPV4_OCTETS)
-                // return logInvalidAvp(type, len, offset);
-                return -1;
-
-            memcpy(pSession->u8FramedIpv4Address, value, IPV4_OCTETS);
-
-            fprintf(stderr, "DEBUG: Framed-IPv4-Address = %u.%u.%u.%u\n",
-                    pSession->u8FramedIpv4Address[0], pSession->u8FramedIpv4Address[1],
-                    pSession->u8FramedIpv4Address[2], pSession->u8FramedIpv4Address[3]);
-
-            pSession->u64ValidAttributes |= VALID_FRAMED_IPV4;
-            break;
-        }
-
-        case FRAMED_IPV6_PREFIX:
-        {
-            if (valueLen < 2 || valueLen > IPV6_PREFIX_MAX_LEN)
-                return logInvalidAvp(type, len, offset);
-
-            uint8_t prefixLen = value[1];
-
-            if (prefixLen > 128)
-                return logInvalidAvp(type, len, offset);
-
-            // Store full prefix blob
-            uint8_t copyLen = valueLen < IPV6_PREFIX_MAX_LEN
-                                  ? valueLen
-                                  : IPV6_PREFIX_MAX_LEN;
-
-            memcpy(pSession->u8FramedIpv6Prefix, value, copyLen);
-
-            fprintf(stderr, "DEBUG: IPv6 Prefix = ");
-            for (int i = 0; i < copyLen; i++)
-            {
-                fprintf(stderr, "%02x ", pSession->u8FramedIpv6Prefix[i]);
-            }
-            fprintf(stderr, "\n");
-
-            pSession->u64ValidAttributes |= VALID_FRAMED_IPV6_PREFIX;
             break;
         }
 
@@ -354,11 +287,8 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         {
             if (valueLen < 3 || valueLen >= sizeof(pSession->acCallingStationId))
                 return -1;
-            // return loginvalidavp;
 
             memcpy(pSession->acCallingStationId, value, valueLen);
-
-            fprintf(stderr, "DEBUG: Calling-Station-Id = %s\n", pSession->acCallingStationId);
 
             pSession->u64ValidAttributes |= VALID_CALLING_STATION_ID;
             break;
@@ -372,22 +302,72 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             uint32_t ts;
             memcpy(&ts, value, sizeof(ts));
 
-            // Convert from network byte order
             pSession->u32EventTimestamp = ntohl(ts);
 
             pSession->u64ValidAttributes |= VALID_EVENT_TIMESTAMP;
-
-            fprintf(stderr, "DEBUG: Event-Timestamp (epoch) = %u\n",
-                    pSession->u32EventTimestamp);
-
             break;
         }
-        default:
+
+        case FRAMED_IP_ADDRESS:
+        {
+            if (valueLen != IPV4_OCTETS)
+                return -1;
+
+            memcpy(pSession->u8FramedIpv4Address, value, IPV4_OCTETS);
+
+            pSession->u64ValidAttributes |= VALID_FRAMED_IPV4;
             break;
-        } // END OF SWITCH
+        }
+
+        case FRAMED_IPV6_PREFIX:
+        {
+            if (valueLen < 2 || valueLen > IPV6_PREFIX_MAX_LEN)
+                return -1;
+
+            uint8_t copyLen = valueLen < IPV6_PREFIX_MAX_LEN ? valueLen : IPV6_PREFIX_MAX_LEN;
+
+            memcpy(pSession->u8FramedIpv6Prefix, value, copyLen);
+
+            pSession->u64ValidAttributes |= VALID_FRAMED_IPV6_PREFIX;
+            break;
+        }
+
+        case ACCT_MULTI_SESSION_ID:
+        {
+            uint8_t copyLen = valueLen < sizeof(pSession->acMultiSessionId) - 1
+                                  ? valueLen
+                                  : sizeof(pSession->acMultiSessionId) - 1;
+
+            memcpy(pSession->acMultiSessionId, value, copyLen);
+            pSession->acMultiSessionId[copyLen] = '\0';
+
+            pSession->u64ValidAttributes |= VALID_ACCT_MULTI_SESSION_ID;
+            break;
+        }
+
+        default:
+        {
+            if (opt_extract_all)
+            {
+                if (pSession->extra_avp_count < MAX_EXTRA_AVPS)
+                {
+                    uint16_t idx = pSession->extra_avp_count++;
+
+                    pSession->extra_avps[idx].type = type;
+                    pSession->extra_avps[idx].len = len;
+
+                    uint8_t copyLen = (len - 2 > MAX_AVP_VALUE)
+                                          ? MAX_AVP_VALUE
+                                          : (len - 2);
+
+                    memcpy(pSession->extra_avps[idx].value, value, copyLen);
+                }
+            }
+            break;
+        }
+        }
         offset += len;
 
     } // END OF WHILE LOOP
-    // return pSession->nSessionIndicator;
     return 0;
 }

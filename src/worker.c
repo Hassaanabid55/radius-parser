@@ -9,33 +9,32 @@ pthread_t worker_threads[MAX_THREADS];
 
 void queue_init(TaskQueue *q)
 {
-    memset(q, 0, sizeof(TaskQueue));
+    memset(q, 0, sizeof(*q));
 
     pthread_mutex_init(&q->mutex, NULL);
-
     pthread_cond_init(&q->not_empty, NULL);
     pthread_cond_init(&q->not_full, NULL);
+
+    q->shutdown = false;
 }
 
 bool queue_push(TaskQueue *q, Task *task)
 {
     pthread_mutex_lock(&q->mutex);
 
-    while (q->count >= MAX_QUEUE_SIZE && g_running)
+    while (q->count >= MAX_QUEUE_SIZE && !q->shutdown)
     {
         pthread_cond_wait(&q->not_full, &q->mutex);
     }
 
-    if (!g_running)
+    if (q->shutdown)
     {
         pthread_mutex_unlock(&q->mutex);
         return false;
     }
 
     q->tasks[q->tail] = *task;
-
     q->tail = (q->tail + 1) % MAX_QUEUE_SIZE;
-
     q->count++;
 
     pthread_cond_signal(&q->not_empty);
@@ -49,15 +48,15 @@ bool queue_pop(TaskQueue *q, Task *task)
 {
     pthread_mutex_lock(&q->mutex);
 
-    while (q->count == 0 && g_running)
+    while (q->count == 0 && !q->shutdown)
     {
         pthread_cond_wait(&q->not_empty, &q->mutex);
     }
 
-    if (!g_running)
+    if (q->count == 0 && q->shutdown)
     {
         pthread_mutex_unlock(&q->mutex);
-        return 0; // exit worker
+        return false;
     }
 
     *task = q->tasks[q->head];
@@ -65,28 +64,67 @@ bool queue_pop(TaskQueue *q, Task *task)
     q->count--;
 
     pthread_cond_signal(&q->not_full);
+
     pthread_mutex_unlock(&q->mutex);
 
-    return 1;
+    return true;
+}
+
+void cleanup_queue(TaskQueue *q)
+{
+    pthread_mutex_lock(&q->mutex);
+
+    /* free remaining tasks */
+    while (q->count > 0)
+    {
+        Task *t = &q->tasks[q->head];
+
+        // if (t->data)
+        // {
+        //     free(t->data);
+        //     t->data = NULL;
+        // }
+
+        q->head = (q->head + 1) % MAX_QUEUE_SIZE;
+        q->count--;
+    }
+
+    pthread_mutex_unlock(&q->mutex);
+
+    pthread_mutex_destroy(&q->mutex);
+    pthread_cond_destroy(&q->not_empty);
+    pthread_cond_destroy(&q->not_full);
 }
 
 /* =========================
  WORKER THREAD
  ========================= */
 
+void wake_worker_threads()
+{
+    pthread_mutex_lock(&global_queue.mutex);
+    pthread_cond_broadcast(&global_queue.not_empty);
+    pthread_cond_broadcast(&global_queue.not_full);
+    pthread_mutex_unlock(&global_queue.mutex);
+}
+
 void *worker_thread(void *arg)
 {
     Task task;
-    (void)arg;
+    int id = (intptr_t)arg;
 
-    printf("Worker thread started...\n");
-    while (g_running && queue_pop(&global_queue, &task))
+    syslog(LOG_INFO, "Worker thread started (ID: %d)\n", id);
+
+    while (1)
     {
+        if (!queue_pop(&global_queue, &task))
+            break;
 
         if (!g_running)
             break;
 
         RadiusPacket radiusPkt;
+
         if (parseRadiusPkt((const char *)task.data, task.packet_length, &radiusPkt) == 0)
         {
             UserSessionInfo session;
@@ -98,7 +136,7 @@ void *worker_thread(void *arg)
 
         free(task.data);
     }
-    printf("Worker thread exiting...\n");
+    syslog(LOG_INFO, "Worker thread exiting (ID: %d)\n", id);
 
     return NULL;
 }
@@ -115,7 +153,7 @@ void start_worker_threads()
     {
         int *thread_id = malloc(sizeof(int));
         *thread_id = i;
-        pthread_create(&worker_threads[i], NULL, worker_thread, thread_id);
+        pthread_create(&worker_threads[i], NULL, worker_thread, (void *)(intptr_t)i);
     }
 }
 
@@ -129,25 +167,4 @@ void submit_task(Task *task)
     {
         free(task->data);
     }
-}
-
-void cleanup_queue(TaskQueue *q)
-{
-    pthread_mutex_lock(&q->mutex);
-
-    while (q->count > 0)
-    {
-        Task *task = &q->tasks[q->head];
-        if (task->data)
-        {
-            free(task->data);
-            task->data = NULL;
-        }
-        q->head = (q->head + 1) % MAX_QUEUE_SIZE;
-        q->count--;
-    }
-    pthread_mutex_unlock(&q->mutex);
-    pthread_mutex_destroy(&q->mutex);
-    pthread_cond_destroy(&q->not_empty);
-    pthread_cond_destroy(&q->not_full);
 }

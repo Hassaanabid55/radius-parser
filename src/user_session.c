@@ -1,99 +1,221 @@
-#include <stdio.h>
-#include <arpa/inet.h>
-
 #include "user_session.h"
-#include "parser.h"
 
-void printUserSession(const UserSessionInfo *pSession)
+static const char *session_type_str(uint8_t type)
 {
-    if (!pSession)
-        return;
-
-    printf("┌─────────────────────────────────────────\n");
-    printf("│ USER SESSION\n");
-    printf("├─────────────────────────────────────────\n");
-
-    // Session indicator
-    const char *pcIndicator = "UNKNOWN";
-    switch (pSession->nSessionIndicator)
+    switch (type)
     {
     case SESSION_START:
-        pcIndicator = "START";
-        break;
+        return "START";
+
     case SESSION_STOP:
-        pcIndicator = "STOP";
-        break;
+        return "STOP";
+
     case SESSION_UPDATE:
-        pcIndicator = "UPDATE";
-        break;
+        return "UPDATE";
+
     default:
-        pcIndicator = "UNKNOWN";
-        break;
+        return "UNKNOWN";
     }
-    printf("│ Session Type     : %s\n", pcIndicator);
+}
 
-    // Acct-Status-Type
-    if (pSession->u64ValidAttributes & VALID_ACCT_STATUS_TYPE)
-        printf("│ Status Type      : %u\n", pSession->u8AccountStatusType);
-    else
-        printf("│ Status Type      : [not present]\n");
+static void print_separator(void)
+{
+    syslog(LOG_INFO, "├──────────────────────────────────────────────────────────────");
+}
 
-    // Acct-Session-Id
-    if (pSession->u64ValidAttributes & VALID_ACCT_SESSION_ID)
-        printf("│ Session ID       : %s\n", pSession->acAccountSessionId);
-    else
-        printf("│ Session ID       : [not present]\n");
+static void print_header(void)
+{
+    syslog(LOG_INFO, "┌──────────────────────────────────────────────────────────────");
+    syslog(LOG_INFO, "│ USER SESSION\n");
+    print_separator();
+}
 
-    // Calling-Station-Id
-    if (pSession->u64ValidAttributes & VALID_CALLING_STATION_ID)
-        printf("│ Calling Station  : %s\n", pSession->acCallingStationId);
-    else
-        printf("│ Calling Station  : [not present]\n");
+static void print_footer(void)
+{
+    syslog(LOG_INFO, "└──────────────────────────────────────────────────────────────");
+}
 
-    // Framed-IP-Address
-    if (pSession->u64ValidAttributes & VALID_FRAMED_IPV4)
+static void print_string_field(const char *label,
+                               const char *value,
+                               int valid)
+{
+    syslog(LOG_INFO, "│ %-22s : %s\n",
+           label,
+           valid ? value : "[not present]");
+}
+
+static void print_uint_field(const char *label,
+                             uint32_t value,
+                             int valid)
+{
+    if (valid)
     {
-        char acIpStr[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, pSession->u8FramedIpv4Address, acIpStr, sizeof(acIpStr));
-        printf("│ Framed IPv4      : %s\n", acIpStr);
-    }
-    else
-        printf("│ Framed IPv4      : [not present]\n");
-
-    // Framed-IPv6-Prefix
-    if (pSession->u64ValidAttributes & VALID_FRAMED_IPV6_PREFIX)
-    {
-        // value[0] = reserved, value[1] = prefix length, value[2+] = address
-        uint8_t u8PrefixLen = pSession->u8FramedIpv6Prefix[1];
-        char acIpv6Str[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, pSession->u8FramedIpv6Prefix + 2, acIpv6Str, sizeof(acIpv6Str));
-        printf("│ Framed IPv6      : %s/%u\n", acIpv6Str, u8PrefixLen);
-    }
-    else
-        printf("│ Framed IPv6      : [not present]\n");
-
-    // Event Timestamp
-    if (pSession->u64ValidAttributes & VALID_EVENT_TIMESTAMP)
-    {
-        printf("│ Event Timestamp  : %u (epoch)\n", pSession->u32EventTimestamp);
-
-        // Convert to readable time (only for display)
-        time_t t = pSession->u32EventTimestamp;
-        struct tm tm_info;
-        localtime_r(&t, &tm_info);
-
-        char acTimeBuf[64];
-        strftime(acTimeBuf, sizeof(acTimeBuf), "%Y-%m-%d %H:%M:%S", &tm_info);
-
-        printf("│ Event Time       : %s\n", acTimeBuf);
+        syslog(LOG_INFO, "│ %-22s : %u\n", label, value);
     }
     else
     {
-        printf("│ Event Timestamp  : [not present]\n");
+        syslog(LOG_INFO, "│ %-22s : [not present]\n", label);
+    }
+}
+
+static void print_ipv4_field(const char *label,
+                             const uint8_t *ip,
+                             int valid)
+{
+    if (valid)
+    {
+        syslog(LOG_INFO, "│ %-22s : %u.%u.%u.%u\n",
+               label,
+               ip[0],
+               ip[1],
+               ip[2],
+               ip[3]);
+    }
+    else
+    {
+        syslog(LOG_INFO, "│ %-22s : [not present]\n", label);
+    }
+}
+
+static void print_ipv6_prefix_field(const char *label,
+                                    const uint8_t *prefix,
+                                    int valid)
+{
+    if (valid)
+    {
+        uint8_t prefixLen = prefix[1];
+
+        char ip6[INET6_ADDRSTRLEN] = {0};
+
+        inet_ntop(AF_INET6,
+                  prefix + 2,
+                  ip6,
+                  sizeof(ip6));
+
+        syslog(LOG_INFO, "│ %-22s : %s/%u\n",
+               label,
+               ip6,
+               prefixLen);
+    }
+    else
+    {
+        syslog(LOG_INFO, "│ %-22s : [not present]\n", label);
+    }
+}
+
+static void print_timestamp(uint32_t epoch, int valid)
+{
+    if (!valid)
+    {
+        syslog(LOG_INFO, "│ %-22s : [not present]\n", "Event Timestamp");
+        return;
     }
 
-    // Whitelist
-    printf("│ Whitelisted      : %s\n", pSession->u8IsWL ? "YES" : "NO");
+    time_t t = (time_t)epoch;
 
-    printf("└─────────────────────────────────────────\n");
+    struct tm tm_info;
+    localtime_r(&t, &tm_info);
+
+    char buf[64] = {0};
+
+    strftime(buf,
+             sizeof(buf),
+             "%Y-%m-%d %H:%M:%S",
+             &tm_info);
+
+    syslog(LOG_INFO, "│ %-22s : %u\n",
+           "Event Timestamp",
+           epoch);
+
+    syslog(LOG_INFO, "│ %-22s : %s\n",
+           "Event Time",
+           buf);
+}
+
+static void print_extra_avps(const UserSessionInfo *s)
+{
+    if (!opt_extract_all)
+        return;
+
+    print_separator();
+
+    syslog(LOG_INFO, "│ EXTRA AVPs (%u)\n",
+           s->extra_avp_count);
+
+    print_separator();
+
+    for (uint16_t i = 0; i < s->extra_avp_count; i++)
+    {
+        const extra_avps *avp = &s->extra_avps[i];
+
+        const char *name =
+            getRadiusAttributeName(avp->type);
+
+        syslog(LOG_INFO, "│ [%03u] %-30s Type=%-3u Len=%-3u\n",
+               i + 1,
+               name,
+               avp->type,
+               avp->len);
+
+        syslog(LOG_INFO, "│ %-22s : ",
+               "Value");
+
+        for (uint16_t j = 0;
+             j < avp->len - 2 && j < MAX_AVP_VALUE;
+             j++)
+        {
+            syslog(LOG_INFO, "│ %-22s : %02x ",
+                   "Value",
+                   avp->value[j]);
+        }
+
+        syslog(LOG_INFO, "\n");
+    }
+}
+
+void printUserSession(const UserSessionInfo *s)
+{
+    if (!s)
+        return;
+
+    print_header();
+
+    print_string_field("Session Type",
+                       session_type_str(s->nSessionIndicator),
+                       1);
+
+    print_uint_field("Radius Length",
+                     s->radiusLength,
+                     1);
+
+    print_string_field("Session ID",
+                       s->acAccountSessionId,
+                       s->u64ValidAttributes & VALID_ACCT_SESSION_ID);
+
+    print_string_field("Multi Session ID",
+                       s->acMultiSessionId,
+                       s->u64ValidAttributes & VALID_ACCT_MULTI_SESSION_ID);
+
+    print_string_field("Calling Station",
+                       s->acCallingStationId,
+                       s->u64ValidAttributes & VALID_CALLING_STATION_ID);
+
+    print_ipv4_field("Framed IPv4",
+                     s->u8FramedIpv4Address,
+                     s->u64ValidAttributes & VALID_FRAMED_IPV4);
+
+    print_ipv6_prefix_field("Framed IPv6 Prefix",
+                            s->u8FramedIpv6Prefix,
+                            s->u64ValidAttributes & VALID_FRAMED_IPV6_PREFIX);
+
+    print_timestamp(s->u32EventTimestamp,
+                    s->u64ValidAttributes & VALID_EVENT_TIMESTAMP);
+
+    print_string_field("WL Status",
+                       s->u8IsWL ? "YES" : "NO",
+                       1);
+
+    print_extra_avps(s);
+
+    print_footer();
 }

@@ -10,9 +10,6 @@
 
 #include "parser.h"
 
-#define MAX_QUEUE_SIZE 4096
-#define MAX_THREADS 64
-
 typedef enum
 {
     L4_UNKNOWN = 0,
@@ -99,17 +96,19 @@ typedef struct
     pthread_mutex_t mutex;
     pthread_cond_t not_empty;
     pthread_cond_t not_full;
+    bool shutdown;
 } TaskQueue;
 
 extern uint8_t opt_threads;
-extern volatile bool g_running;
+extern volatile sig_atomic_t g_running;
 extern TaskQueue global_queue;
 extern pthread_t worker_threads[MAX_THREADS];
 
 void queue_init(TaskQueue *q);
 bool queue_push(TaskQueue *q, Task *task);
 bool queue_pop(TaskQueue *q, Task *task);
+void cleanup_queue(TaskQueue *q);
 void *worker_thread(void *arg);
+void wake_worker_threads();
 void start_worker_threads();
 void submit_task(Task *task);
-void cleanup_queue(TaskQueue *q);

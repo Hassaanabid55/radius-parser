@@ -71,13 +71,13 @@ bool build_radius_task(Task *task, const struct pcap_pkthdr *header, const uint8
      * RADIUS port validation
      */
 
-    if (task->src_port == 1812 ||
-        task->dst_port == 1812)
+    if (task->src_port == RADIUS_ACCT_PORT_1 ||
+        task->dst_port == RADIUS_ACCT_PORT_1)
     {
         task->packet_type = PKT_RADIUS_AUTH;
     }
-    else if (task->src_port == 1813 ||
-             task->dst_port == 1813)
+    else if (task->src_port == RADIUS_ACCT_PORT_2 ||
+             task->dst_port == RADIUS_ACCT_PORT_2)
     {
         task->packet_type = PKT_RADIUS_ACCT;
     }
@@ -143,9 +143,7 @@ void packet_handler(unsigned char *user,
 
     Task task;
 
-    if (!build_radius_task(&task,
-                           header,
-                           packet))
+    if (!build_radius_task(&task, header, packet))
     {
         return;
     }
@@ -194,9 +192,9 @@ void start_interface_capture()
 
         if (!handle)
         {
-            fprintf(stderr,
-                    "pcap_create failed: %s\n",
-                    errbuf);
+            syslog(LOG_ERR,
+                   "pcap_create failed: %s",
+                   errbuf);
 
             sleep(1);
 
@@ -209,8 +207,8 @@ void start_interface_capture()
 
         if (pcap_set_snaplen(handle, opt_caplen) != 0)
         {
-            fprintf(stderr,
-                    "pcap_set_snaplen failed\n");
+            syslog(LOG_ERR,
+                   "pcap_set_snaplen failed");
 
             pcap_close(handle);
 
@@ -225,8 +223,8 @@ void start_interface_capture()
 
         if (pcap_set_promisc(handle, 1) != 0)
         {
-            fprintf(stderr,
-                    "pcap_set_promisc failed\n");
+            syslog(LOG_ERR,
+                   "pcap_set_promisc failed");
 
             pcap_close(handle);
 
@@ -250,8 +248,8 @@ void start_interface_capture()
         if (pcap_set_buffer_size(handle,
                                  opt_ring_buffer_size) != 0)
         {
-            fprintf(stderr,
-                    "pcap_set_buffer_size failed\n");
+            syslog(LOG_ERR,
+                   "pcap_set_buffer_size failed");
         }
 
         /*
@@ -260,8 +258,8 @@ void start_interface_capture()
 
         if (pcap_set_timeout(handle, 0) != 0)
         {
-            fprintf(stderr,
-                    "pcap_set_timeout failed\n");
+            syslog(LOG_ERR,
+                   "pcap_set_timeout failed");
         }
 
         /*
@@ -272,9 +270,9 @@ void start_interface_capture()
 
         if (ret < 0)
         {
-            fprintf(stderr,
-                    "pcap_activate failed: %s\n",
-                    pcap_geterr(handle));
+            syslog(LOG_ERR,
+                   "pcap_activate failed: %s",
+                   pcap_geterr(handle));
 
             pcap_close(handle);
 
@@ -285,7 +283,8 @@ void start_interface_capture()
 
         g_pcap_handle = handle;
 
-        printf("Listening on interface: %s\n",
+        syslog(LOG_INFO,
+               "Listening on interface: %s",
                opt_interface_name);
 
         /*
@@ -301,9 +300,9 @@ void start_interface_capture()
 
             if (ret == PCAP_ERROR)
             {
-                fprintf(stderr,
-                        "pcap_dispatch error: %s\n",
-                        pcap_geterr(handle));
+                syslog(LOG_ERR,
+                       "pcap_dispatch error: %s",
+                       pcap_geterr(handle));
 
                 break;
             }
@@ -314,6 +313,8 @@ void start_interface_capture()
             }
         }
 
+        syslog(LOG_INFO,
+               "Capture loop exited, closing interface...");
         pcap_close(handle);
 
         g_pcap_handle = NULL;
@@ -324,18 +325,15 @@ void start_interface_capture()
 
         if (g_running)
         {
-            printf("Reconnecting capture interface...\n");
+            syslog(LOG_INFO,
+                   "Reconnecting capture interface...");
 
             sleep(1);
         }
     }
 }
 
-/* =========================
- SIGNAL HANDLER
- ========================= */
-
-void cleanup_interface()
+void stop_interface_capture()
 {
     if (g_pcap_handle)
     {

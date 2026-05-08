@@ -1,11 +1,14 @@
-#include "worker.h"
-#include "capture.h"
-
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdbool.h>
 #include <signal.h>
+#include <sys/syslog.h>
+#include <string.h>
+#include <time.h>
 
-#define MAX_LINE 512
+#include <capture.h>
+#include <macros.h>
 
 typedef enum
 {
@@ -55,23 +58,28 @@ uint16_t opt_mysql_port = 0;
  GLOBALS
  ========================= */
 
-volatile bool g_running = true;
+volatile sig_atomic_t g_running = 1;
+
+/* =========================
+ SIGNAL HANDLER
+ ========================= */
 
 void signal_handler(int sig)
 {
     if (sig == SIGINT || sig == SIGTERM)
     {
-        printf("\nShutdown signal received...\n");
+        syslog(LOG_INFO, "Shutdown signal received");
+
         g_running = 0;
 
-        for (int i = 0; i < opt_threads; i++)
-        {
-            printf("Waiting for worker thread %d to finish...\n", i);
-            pthread_join(worker_threads[i], NULL);
-        }
+        pthread_mutex_lock(&global_queue.mutex);
+        global_queue.shutdown = true;
+        pthread_cond_broadcast(&global_queue.not_empty);
+        pthread_cond_broadcast(&global_queue.not_full);
+        pthread_mutex_unlock(&global_queue.mutex);
 
-        cleanup_queue(&global_queue);
-        cleanup_interface();
+        if (g_pcap_handle)
+            pcap_breakloop(g_pcap_handle);
     }
 }
 
@@ -264,8 +272,12 @@ void load_config(const char *path)
  ========================= */
 int main(int argc, char *argv[])
 {
+    openlog("radius_parser", LOG_PID | LOG_CONS, LOG_USER);
+
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    syslog(LOG_INFO, "Radius parser started");
 
     for (int i = 1; i < argc; i++)
     {
@@ -356,16 +368,38 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* ---------------- START SYSTEM ---------------- */
+
     start_worker_threads();
 
     if (opt_input_files[0] != '\0')
     {
-        printf("Processing input file: %s\n", opt_input_files);
+        syslog(LOG_INFO, "Processing input file: %s", opt_input_files);
+        // start_file_processing();
     }
     else if (opt_interface_name[0] != '\0')
     {
         start_interface_capture();
     }
+    else
+    {
+        syslog(LOG_ERR, "No input source provided");
+    }
+
+    // wait for shutdown signal
+    while (g_running)
+    {
+        sleep(1);
+    }
+
+    /* WAIT FOR WORKERS TO FINISH */
+    syslog(LOG_INFO, "Waiting for worker threads...");
+
+    for (int i = 0; i < opt_threads; i++)
+        pthread_join(worker_threads[i], NULL);
+
+    cleanup_queue(&global_queue);
+    closelog();
 
     return 0;
 }
