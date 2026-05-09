@@ -77,13 +77,13 @@ void cleanup_queue(TaskQueue *q)
     /* free remaining tasks */
     while (q->count > 0)
     {
-        Task *t = &q->tasks[q->head];
+        // Task *t = &q->tasks[q->head];
 
-        // if (t->data)
-        // {
-        //     free(t->data);
-        //     t->data = NULL;
-        // }
+        if (q->tasks[q->head].data)
+        {
+            free(q->tasks[q->head].data);
+            q->tasks[q->head].data = NULL;
+        }
 
         q->head = (q->head + 1) % MAX_QUEUE_SIZE;
         q->count--;
@@ -112,8 +112,11 @@ void *worker_thread(void *arg)
 {
     Task task;
     int id = (intptr_t)arg;
-
-    syslog(LOG_INFO, "Worker thread started (ID: %d)\n", id);
+    struct timespec start;
+    struct timespec end;
+    uint64_t total_packets = 0;
+    uint64_t total_processing_ns = 0;
+    syslog(LOG_INFO, "Worker thread started (ID: %d)", id);
 
     while (1)
     {
@@ -123,6 +126,7 @@ void *worker_thread(void *arg)
         if (!g_running)
             break;
 
+        clock_gettime(CLOCK_MONOTONIC, &start);
         RadiusPacket radiusPkt;
 
         if (parseRadiusPkt((const char *)task.data, task.packet_length, &radiusPkt) == 0)
@@ -133,10 +137,30 @@ void *worker_thread(void *arg)
                 printUserSession(&session);
             }
         }
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        uint64_t elapsed_ns = ((uint64_t)(end.tv_sec - start.tv_sec) * 1000000000ULL) + (uint64_t)(end.tv_nsec - start.tv_nsec);
+        total_processing_ns += elapsed_ns;
+        total_packets++;
 
+        /*
+         * Optional per-packet timing
+         */
+
+        syslog(LOG_DEBUG, "Worker %d processed packet in %.3f ms", id, (double)elapsed_ns / 1000000.0);
         free(task.data);
     }
-    syslog(LOG_INFO, "Worker thread exiting (ID: %d)\n", id);
+    double total_ms = (double)total_processing_ns / 1000000.0;
+    double avg_ms = (total_packets > 0) ? (total_ms / total_packets) : 0.0;
+
+    syslog(LOG_INFO,
+           "Worker thread exiting (ID: %d) | "
+           "Packets: %lu | "
+           "Total Time: %.3f ms | "
+           "Average: %.3f ms/packet",
+           id,
+           total_packets,
+           total_ms,
+           avg_ms);
 
     return NULL;
 }

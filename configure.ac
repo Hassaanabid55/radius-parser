@@ -18,8 +18,16 @@ AC_CHECK_LIB([pthread], [pthread_create], [],
     AC_MSG_ERROR([pthread not found])
 ])
 
+AC_CHECK_LIB([mysqlclient], [mysql_init], [],
+[
+    AC_MSG_ERROR([mysqlclient not found])
+])
+
 AC_CONFIG_FILES([
 Makefile
 ])
+
+AC_CHECK_HEADERS([arpa/inet.h stdlib.h string.h pthread.h])
+AC_CHECK_FUNCS([strtoul memset memcpy])
 
 AC_OUTPUT

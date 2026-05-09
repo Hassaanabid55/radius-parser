@@ -23,6 +23,10 @@ rm -rf \
     .deps \
     src/.deps \
     src/.dirstamp \
+    src/modules/cgnat/.deps \
+    src/modules/cgnat/.dirstamp \
+    src/modules/mysql/.deps \
+    src/modules/mysql/.dirstamp \
     bin/radius_parser
 
 find . -name "*.o" -delete

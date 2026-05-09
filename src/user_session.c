@@ -200,13 +200,32 @@ void printUserSession(const UserSessionInfo *s)
                        s->acCallingStationId,
                        s->u64ValidAttributes & VALID_CALLING_STATION_ID);
 
-    print_ipv4_field("Framed IPv4",
+    print_ipv4_field("Framed IPv4 (Private)",
                      s->u8FramedIpv4Address,
                      s->u64ValidAttributes & VALID_FRAMED_IPV4);
+
+    print_ipv4_field("Framed IPv4 (Public)",
+                     s->u8FramedIpv4PubAddress,
+                     (s->portStart != 0 || s->portEnd != 0));
 
     print_ipv6_prefix_field("Framed IPv6 Prefix",
                             s->u8FramedIpv6Prefix,
                             s->u64ValidAttributes & VALID_FRAMED_IPV6_PREFIX);
+
+    if (s->portStart && s->portEnd)
+    {
+        syslog(LOG_INFO,
+               "│ %-22s : %u - %u\n",
+               "NAT Port Range",
+               s->portStart,
+               s->portEnd);
+    }
+    else
+    {
+        syslog(LOG_INFO,
+               "│ %-22s : [not mapped]\n",
+               "NAT Port Range");
+    }
 
     print_timestamp(s->u32EventTimestamp,
                     s->u64ValidAttributes & VALID_EVENT_TIMESTAMP);

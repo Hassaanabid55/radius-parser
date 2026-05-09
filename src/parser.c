@@ -1,5 +1,11 @@
 #include "parser.h"
 
+static inline void ipv4_to_str(const uint8_t ip[4], char *out)
+{
+    snprintf(out, 16, "%u.%u.%u.%u",
+             ip[0], ip[1], ip[2], ip[3]);
+}
+
 /*
  *   Extract IPv4 layer from Eth frame
  *   - pPacket: pointer to the start of the Ethernet frame
@@ -285,12 +291,30 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
 
         case CALLING_STATION_ID:
         {
-            if (valueLen < 3 || valueLen >= sizeof(pSession->acCallingStationId))
+            if (valueLen < 3 ||
+                valueLen >= sizeof(pSession->acCallingStationId))
+            {
                 return -1;
+            }
 
-            memcpy(pSession->acCallingStationId, value, valueLen);
+            memcpy(pSession->acCallingStationId,
+                   value,
+                   valueLen);
 
+            pSession->acCallingStationId[valueLen] = '\0';
             pSession->u64ValidAttributes |= VALID_CALLING_STATION_ID;
+
+            /* ---------------- WL LOOKUP ---------------- */
+
+            WhitelistInfo wlInfo;
+            if (wl_lookup(pSession->acCallingStationId, &wlInfo) && wlInfo.status)
+            {
+                pSession->u8IsWL = 1;
+            }
+            else
+            {
+                pSession->u8IsWL = 0;
+            }
             break;
         }
 
@@ -313,9 +337,35 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             if (valueLen != IPV4_OCTETS)
                 return -1;
 
-            memcpy(pSession->u8FramedIpv4Address, value, IPV4_OCTETS);
+            memcpy(pSession->u8FramedIpv4Address,
+                   value,
+                   IPV4_OCTETS);
 
             pSession->u64ValidAttributes |= VALID_FRAMED_IPV4;
+
+            /* =========================
+             * CGNAT LOOKUP INTEGRATION
+             * ========================= */
+
+            char ip_str[16] = {0};
+            ipv4_to_str(pSession->u8FramedIpv4Address, ip_str);
+
+            CgnatEntry entry;
+
+            if (cgnat_lookup(ip_str, &entry)) // port ignored here initially
+            {
+                /* store NAT IP */
+                struct in_addr addr;
+                inet_pton(AF_INET, entry.nat_ip, &addr);
+
+                memcpy(pSession->u8FramedIpv4PubAddress,
+                       &addr.s_addr,
+                       IPV4_OCTETS);
+
+                pSession->portStart = entry.start_port;
+                pSession->portEnd = entry.end_port;
+            }
+
             break;
         }
 

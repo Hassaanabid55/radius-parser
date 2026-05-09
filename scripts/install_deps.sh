@@ -12,4 +12,6 @@ apt install -y \
     automake \
     libtool \
     pkg-config \
-    libpcap-dev
+    libpcap-dev \
+    libmysqlclient-dev \
+    uthash-dev 

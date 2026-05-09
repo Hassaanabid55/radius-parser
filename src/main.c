@@ -10,6 +10,8 @@
 #include <capture.h>
 #include <macros.h>
 
+#include "modules/mysql/db.h"
+
 typedef enum
 {
     ARG_UNKNOWN,
@@ -18,6 +20,7 @@ typedef enum
     ARG_INTERFACE,
     ARG_THREADS,
     ARG_INPUT_FILE,
+    ARG_WHITELIST_FILE,
 
     ARG_CGNAT_FILE,
     ARG_EXTRACT_ALL,
@@ -40,6 +43,7 @@ typedef enum
 char opt_output_folder[256] = "";
 char opt_config_file[256] = "";
 char opt_cgnat_file_path[256] = "";
+char opt_whitelist_file_path[256] = "";
 char opt_interface_name[64] = "lo";
 uint8_t opt_threads = 1;
 bool opt_extract_all = false;
@@ -48,10 +52,10 @@ uint16_t opt_update_timeout = 900;       // 15 minutes
 uint16_t opt_bye_timeout = 43200;        // 12 hours
 uint32_t opt_ring_buffer_size = 1048576; // 512MB
 char opt_input_files[256] = "";
-char opt_mysql_host[256] = "127.0.0.1";
-char opt_mysql_database[256] = "MDF";
-char opt_mysql_user[256] = "root";
-char opt_mysql_password[256] = "";
+char opt_mysql_host[128] = "127.0.0.1";
+char opt_mysql_database[64] = "MDF";
+char opt_mysql_user[64] = "root";
+char opt_mysql_password[64] = "";
 uint16_t opt_mysql_port = 0;
 
 /* =========================
@@ -97,6 +101,8 @@ ArgType get_arg_type(const char *arg)
         return ARG_INTERFACE;
     if (strcmp(arg, "-t") == 0 || strcmp(arg, "--threads") == 0)
         return ARG_THREADS;
+    if (strcmp(arg, "--whitelist-file") == 0)
+        return ARG_WHITELIST_FILE;
     if (strcmp(arg, "--cgnat-file") == 0)
         return ARG_CGNAT_FILE;
     if (strcmp(arg, "--extract-all") == 0)
@@ -197,6 +203,11 @@ void load_config(const char *path)
         {
             strncpy(opt_cgnat_file_path, val, sizeof(opt_cgnat_file_path) - 1);
             opt_cgnat_file_path[sizeof(opt_cgnat_file_path) - 1] = '\0';
+        }
+        else if (strcmp(key, "whitelist_file_path") == 0)
+        {
+            strncpy(opt_whitelist_file_path, val, sizeof(opt_whitelist_file_path) - 1);
+            opt_whitelist_file_path[sizeof(opt_whitelist_file_path) - 1] = '\0';
         }
         else if (strcmp(key, "interface_name") == 0)
         {
@@ -331,6 +342,14 @@ int main(int argc, char *argv[])
             }
             break;
 
+        case ARG_WHITELIST_FILE:
+            if (i + 1 < argc)
+            {
+                strncpy(opt_whitelist_file_path, argv[++i], sizeof(opt_whitelist_file_path) - 1);
+                opt_whitelist_file_path[sizeof(opt_whitelist_file_path) - 1] = '\0';
+            }
+            break;
+
         case ARG_EXTRACT_ALL:
             opt_extract_all = parse_bool(argv[++i]);
             break;
@@ -367,6 +386,104 @@ int main(int argc, char *argv[])
             break;
         }
     }
+    /* ---------------- DATA LOADING ---------------- */
+
+    DBConfig dbcfg;
+
+    memset(&dbcfg, 0, sizeof(DBConfig));
+
+    dbcfg.enabled =
+        (opt_mysql_host[0] != '\0' &&
+         opt_mysql_database[0] != '\0');
+
+    snprintf(dbcfg.host,
+             sizeof(dbcfg.host),
+             "%s",
+             opt_mysql_host);
+
+    snprintf(dbcfg.user,
+             sizeof(dbcfg.user),
+             "%s",
+             opt_mysql_user);
+
+    snprintf(dbcfg.password,
+             sizeof(dbcfg.password),
+             "%s",
+             opt_mysql_password);
+
+    snprintf(dbcfg.database,
+             sizeof(dbcfg.database),
+             "%s",
+             opt_mysql_database);
+
+    dbcfg.port = opt_mysql_port;
+
+    db_init(&dbcfg);
+
+    /*
+     * Priority:
+     * DB > FILE
+     */
+
+    if (db_is_enabled())
+    {
+        syslog(LOG_INFO,
+               "Loading data from DB");
+        if (db_load_whitelist() != 0)
+        {
+            syslog(LOG_ERR,
+                   "Failed loading whitelist from DB");
+
+            return -1;
+        }
+
+        if (db_load_cgnat() != 0)
+        {
+            syslog(LOG_ERR,
+                   "Failed loading CGNAT from DB");
+
+            return -1;
+        }
+    }
+    else
+    {
+        syslog(LOG_INFO,
+               "Loading data from files");
+
+        if (opt_whitelist_file_path[0] == '\0')
+        {
+            syslog(LOG_ERR,
+                   "Whitelist file missing");
+
+            return -1;
+        }
+
+        if (opt_cgnat_file_path[0] == '\0')
+        {
+            syslog(LOG_ERR,
+                   "CGNAT file missing");
+
+            return -1;
+        }
+
+        if (wl_load_from_file(
+                opt_whitelist_file_path) != 0)
+        {
+            syslog(LOG_ERR,
+                   "Failed loading whitelist file");
+
+            return -1;
+        }
+
+        if (cgnat_load_from_csv(
+                opt_cgnat_file_path) != 0)
+        {
+            syslog(LOG_ERR,
+                   "Failed loading CGNAT CSV");
+
+            return -1;
+        }
+    }
 
     /* ---------------- START SYSTEM ---------------- */
 
@@ -398,6 +515,7 @@ int main(int argc, char *argv[])
     for (int i = 0; i < opt_threads; i++)
         pthread_join(worker_threads[i], NULL);
 
+    db_close();
     cleanup_queue(&global_queue);
     closelog();
 

@@ -15,6 +15,8 @@
 #include <arpa/inet.h>
 
 #include "user_session.h"
+#include "modules/cgnat/whitelist_handler.h"
+#include "modules/cgnat/cgnat_handler.h"
 
 extern bool opt_extract_all;
 

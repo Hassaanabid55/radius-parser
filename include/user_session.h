@@ -35,8 +35,12 @@ typedef struct
     uint8_t u8FramedIpv4Address[IPV4_OCTETS];
     uint8_t u8FramedIpv6Prefix[IPV6_PREFIX_MAX_LEN];
     char acCallingStationId[32];
-
+    
     uint8_t u8IsWL;
+
+    uint8_t u8FramedIpv4PubAddress[IPV4_OCTETS];
+    uint16_t portStart;
+    uint16_t portEnd;
 
     uint16_t radiusLength;
 
