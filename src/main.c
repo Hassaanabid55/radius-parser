@@ -3,7 +3,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <sys/syslog.h>
+#include <unistd.h>
+#include <syslog.h>
 #include <string.h>
 #include <time.h>
 
@@ -14,21 +15,19 @@
 
 typedef enum
 {
-    ARG_UNKNOWN,
+    ARG_UNKNOWN = 0,
     ARG_CONFIG,
-    ARG_OUTPUT,
+    ARG_VERBOSE,
     ARG_INTERFACE,
     ARG_THREADS,
     ARG_INPUT_FILE,
     ARG_WHITELIST_FILE,
-
     ARG_CGNAT_FILE,
     ARG_EXTRACT_ALL,
     ARG_CAPLEN,
     ARG_UPDATE_TIMEOUT,
     ARG_BYE_TIMEOUT,
     ARG_RING_BUFFER_SIZE,
-
     ARG_MYSQL_HOST,
     ARG_MYSQL_DATABASE,
     ARG_MYSQL_USER,
@@ -40,23 +39,25 @@ typedef enum
  CONFIGURATION OPTIONS
  ========================= */
 
-char opt_output_folder[256] = "";
 char opt_config_file[256] = "";
 char opt_cgnat_file_path[256] = "";
 char opt_whitelist_file_path[256] = "";
 char opt_interface_name[64] = "lo";
-uint8_t opt_threads = 1;
-bool opt_extract_all = false;
-uint16_t opt_caplen = 3200;
-uint16_t opt_update_timeout = 900;       // 15 minutes
-uint16_t opt_bye_timeout = 43200;        // 12 hours
-uint32_t opt_ring_buffer_size = 1048576; // 512MB
 char opt_input_files[256] = "";
-char opt_mysql_host[128] = "127.0.0.1";
-char opt_mysql_database[64] = "MDF";
-char opt_mysql_user[64] = "root";
+char opt_mysql_host[128] = "";
+char opt_mysql_database[64] = "";
+char opt_mysql_user[64] = "";
 char opt_mysql_password[64] = "";
+
+uint8_t opt_threads = 1;
+uint8_t opt_verbosity = 0;
+uint16_t opt_caplen = 3200;
+uint16_t opt_update_timeout = 900;
+uint16_t opt_bye_timeout = 43200;
 uint16_t opt_mysql_port = 0;
+uint32_t opt_ring_buffer_size = 1048576;
+
+bool opt_extract_all = false;
 
 /* =========================
  GLOBALS
@@ -65,121 +66,195 @@ uint16_t opt_mysql_port = 0;
 volatile sig_atomic_t g_running = 1;
 
 /* =========================
+ FAST SAFE STRING COPY
+ ========================= */
+
+static inline void safe_strcpy(char *dst, size_t dst_size, const char *src)
+{
+    if (__builtin_expect(!dst || !src || dst_size == 0, 0))
+        return;
+
+    strncpy(dst, src, dst_size - 1);
+    dst[dst_size - 1] = '\0';
+}
+
+/* =========================
  SIGNAL HANDLER
  ========================= */
 
 void signal_handler(int sig)
 {
-    if (sig == SIGINT || sig == SIGTERM)
-    {
+    if (sig != SIGINT && sig != SIGTERM)
+        return;
+
+    if (opt_verbosity > 0)
         syslog(LOG_INFO, "Shutdown signal received");
-
-        g_running = 0;
-
-        pthread_mutex_lock(&global_queue.mutex);
-        global_queue.shutdown = true;
-        pthread_cond_broadcast(&global_queue.not_empty);
-        pthread_cond_broadcast(&global_queue.not_full);
-        pthread_mutex_unlock(&global_queue.mutex);
-
-        if (g_pcap_handle)
-            pcap_breakloop(g_pcap_handle);
+    g_running = 0;
+    pthread_mutex_lock(&global_queue.mutex);
+    global_queue.shutdown = true;
+    pthread_cond_broadcast(&global_queue.not_empty);
+    pthread_cond_broadcast(&global_queue.not_full);
+    pthread_mutex_unlock(&global_queue.mutex);
+    if (g_pcap_handle)
+    {
+        pcap_breakloop(g_pcap_handle);
     }
 }
 
 /* =========================
- COMMAND-LINE ARGUMENT PARSING
+ ARGUMENT PARSING
  ========================= */
 
-ArgType get_arg_type(const char *arg)
+static inline ArgType get_arg_type(const char *arg)
 {
-    if (strcmp(arg, "-c") == 0 || strcmp(arg, "--config-file") == 0)
-        return ARG_CONFIG;
-    if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0)
-        return ARG_OUTPUT;
-    if (strcmp(arg, "-i") == 0 || strcmp(arg, "--interface") == 0)
-        return ARG_INTERFACE;
-    if (strcmp(arg, "-t") == 0 || strcmp(arg, "--threads") == 0)
-        return ARG_THREADS;
-    if (strcmp(arg, "--whitelist-file") == 0)
+    if (!arg)
+        return ARG_UNKNOWN;
+
+    switch (arg[1])
+    {
+    case 'c':
+        if (!strcmp(arg, "-c") || !strcmp(arg, "--config-file"))
+            return ARG_CONFIG;
+        break;
+
+    case 'v':
+        if (!strcmp(arg, "-v") || !strcmp(arg, "--verbose"))
+            return ARG_VERBOSE;
+        break;
+
+    case 'i':
+        if (!strcmp(arg, "-i") || !strcmp(arg, "--interface"))
+            return ARG_INTERFACE;
+        break;
+
+    case 't':
+        if (!strcmp(arg, "-t") || !strcmp(arg, "--threads"))
+            return ARG_THREADS;
+        break;
+
+    case 'H':
+        if (!strcmp(arg, "-H") || !strcmp(arg, "--mysql-host"))
+            return ARG_MYSQL_HOST;
+        break;
+
+    case 'D':
+        if (!strcmp(arg, "-D") || !strcmp(arg, "--mysql-database"))
+            return ARG_MYSQL_DATABASE;
+        break;
+
+    case 'U':
+        if (!strcmp(arg, "-U") || !strcmp(arg, "--mysql-user"))
+            return ARG_MYSQL_USER;
+        break;
+
+    case 'P':
+        if (!strcmp(arg, "-P") || !strcmp(arg, "--mysql-password"))
+            return ARG_MYSQL_PASSWORD;
+        break;
+
+    case 'p':
+        if (!strcmp(arg, "-p") || !strcmp(arg, "--mysql-port"))
+            return ARG_MYSQL_PORT;
+        break;
+
+    default:
+        break;
+    }
+
+    if (!strcmp(arg, "--whitelist-file"))
         return ARG_WHITELIST_FILE;
-    if (strcmp(arg, "--cgnat-file") == 0)
+
+    if (!strcmp(arg, "--cgnat-file"))
         return ARG_CGNAT_FILE;
-    if (strcmp(arg, "--extract-all") == 0)
+
+    if (!strcmp(arg, "--extract-all"))
         return ARG_EXTRACT_ALL;
-    if (strcmp(arg, "--caplen") == 0)
+
+    if (!strcmp(arg, "--caplen"))
         return ARG_CAPLEN;
-    if (strcmp(arg, "--update-timeout") == 0)
+
+    if (!strcmp(arg, "--update-timeout"))
         return ARG_UPDATE_TIMEOUT;
-    if (strcmp(arg, "--bye-timeout") == 0)
+
+    if (!strcmp(arg, "--bye-timeout"))
         return ARG_BYE_TIMEOUT;
-    if (strcmp(arg, "--ring-buffer-size") == 0)
+
+    if (!strcmp(arg, "--ring-buffer-size"))
         return ARG_RING_BUFFER_SIZE;
-    if (strcmp(arg, "-H") == 0 || strcmp(arg, "--mysql-host") == 0)
-        return ARG_MYSQL_HOST;
-    if (strcmp(arg, "-D") == 0 || strcmp(arg, "--mysql-database") == 0)
-        return ARG_MYSQL_DATABASE;
-    if (strcmp(arg, "-U") == 0 || strcmp(arg, "--mysql-user") == 0)
-        return ARG_MYSQL_USER;
-    if (strcmp(arg, "-P") == 0 || strcmp(arg, "--mysql-password") == 0)
-        return ARG_MYSQL_PASSWORD;
-    if (strcmp(arg, "-p") == 0 || strcmp(arg, "--mysql-port") == 0)
-        return ARG_MYSQL_PORT;
-    if (strcmp(arg, "--input-file") == 0)
+
+    if (!strcmp(arg, "--input-file"))
         return ARG_INPUT_FILE;
+
     return ARG_UNKNOWN;
 }
 
-static uint8_t parse_u8(const char *s)
+/* =========================
+ FAST PARSERS
+ ========================= */
+
+static inline uint8_t parse_u8(const char *s)
 {
-    return (uint8_t)atoi(s);
+    return (uint8_t)strtoul(s, NULL, 10);
 }
 
-static uint16_t parse_u16(const char *s)
+static inline uint16_t parse_u16(const char *s)
 {
-    return (uint16_t)atoi(s);
+    return (uint16_t)strtoul(s, NULL, 10);
 }
 
-static uint32_t parse_u32(const char *s)
+static inline uint32_t parse_u32(const char *s)
 {
     return (uint32_t)strtoul(s, NULL, 10);
 }
 
-static int parse_bool(const char *s)
+static inline bool parse_bool(const char *s)
 {
-    return (strcmp(s, "1") == 0 ||
-            strcmp(s, "true") == 0 ||
-            strcmp(s, "yes") == 0 ||
-            strcmp(s, "on") == 0);
+    if (!s)
+        return false;
+
+    return (!strcmp(s, "1") || !strcmp(s, "true") || !strcmp(s, "yes") || !strcmp(s, "on"));
 }
 
-static char *trim(char *s)
+/* =========================
+ STRING TRIM
+ ========================= */
+
+static inline char *trim(char *s)
 {
-    char *end;
+    if (!s)
+        return s;
 
     while (*s == ' ' || *s == '\t')
-        s++;
+        ++s;
 
-    end = s + strlen(s) - 1;
-
-    while (end > s && (*end == '\n' || *end == ' ' || *end == '\t'))
-        *end-- = '\0';
-
+    char *end = s + strlen(s);
+    while (end > s)
+    {
+        char c = *(end - 1);
+        if (c != '\n' && c != '\r' && c != ' ' && c != '\t')
+        {
+            break;
+        }
+        --end;
+    }
+    *end = '\0';
     return s;
 }
 
-/* Config loader (same as before, simplified here) */
+/* =========================
+ CONFIG LOADER
+ ========================= */
+
 void load_config(const char *path)
 {
     FILE *fp = fopen(path, "r");
     if (!fp)
     {
-        perror("Config open failed");
+        syslog(LOG_ERR, "Failed opening config: %s", path);
         return;
     }
 
     char line[MAX_LINE];
-
     while (fgets(line, sizeof(line), fp))
     {
         char *eq = strchr(line, '=');
@@ -187,146 +262,113 @@ void load_config(const char *path)
             continue;
 
         *eq = '\0';
-        char *key = line;
-        char *val = eq + 1;
+        char *key = trim(line);
+        char *val = trim(eq + 1);
+        if (!*key || !*val)
+            continue;
 
-        trim(key);
-        trim(val);
+        /* ---------- GENERAL ---------- */
 
-        /* ---------------- GENERAL ---------------- */
-        if (strcmp(key, "output_folder") == 0)
-        {
-            strncpy(opt_output_folder, val, sizeof(opt_output_folder) - 1);
-            opt_output_folder[sizeof(opt_output_folder) - 1] = '\0';
-        }
-        else if (strcmp(key, "cgnat_file_path") == 0)
-        {
-            strncpy(opt_cgnat_file_path, val, sizeof(opt_cgnat_file_path) - 1);
-            opt_cgnat_file_path[sizeof(opt_cgnat_file_path) - 1] = '\0';
-        }
-        else if (strcmp(key, "whitelist_file_path") == 0)
-        {
-            strncpy(opt_whitelist_file_path, val, sizeof(opt_whitelist_file_path) - 1);
-            opt_whitelist_file_path[sizeof(opt_whitelist_file_path) - 1] = '\0';
-        }
-        else if (strcmp(key, "interface_name") == 0)
-        {
-            strncpy(opt_interface_name, val, sizeof(opt_interface_name) - 1);
-            opt_interface_name[sizeof(opt_interface_name) - 1] = '\0';
-        }
-        else if (strcmp(key, "threads") == 0)
-        {
-            opt_threads = (uint8_t)atoi(val);
-        }
-        else if (strcmp(key, "extract_all") == 0)
-        {
-            opt_extract_all = (strcmp(val, "1") == 0 || strcmp(val, "true") == 0 || strcmp(val, "yes") == 0 || strcmp(val, "on") == 0);
-        }
+        if (!strcmp(key, "verbosity"))
+            opt_verbosity = parse_u8(val);
 
-        /* ---------------- CAPTURE SETTINGS ---------------- */
-        else if (strcmp(key, "caplen") == 0)
-        {
-            opt_caplen = (uint16_t)atoi(val);
-        }
-        else if (strcmp(key, "update_timeout") == 0)
-        {
-            opt_update_timeout = (uint16_t)atoi(val);
-        }
-        else if (strcmp(key, "bye_timeout") == 0)
-        {
-            opt_bye_timeout = (uint16_t)atoi(val);
-        }
-        else if (strcmp(key, "ring_buffer_size") == 0)
-        {
-            opt_ring_buffer_size = (uint32_t)strtoul(val, NULL, 10);
-        }
+        else if (!strcmp(key, "cgnat_file_path"))
+            safe_strcpy(opt_cgnat_file_path, sizeof(opt_cgnat_file_path), val);
 
-        /* ---------------- INPUT FILE ---------------- */
-        else if (strcmp(key, "input_file") == 0)
-        {
-            strncpy(opt_input_files, val, sizeof(opt_input_files) - 1);
-            opt_input_files[sizeof(opt_input_files) - 1] = '\0';
-        }
+        else if (!strcmp(key, "whitelist_file_path"))
+            safe_strcpy(opt_whitelist_file_path, sizeof(opt_whitelist_file_path), val);
 
-        /* ---------------- MYSQL ---------------- */
-        else if (strcmp(key, "mysql_host") == 0)
-        {
-            strncpy(opt_mysql_host, val, sizeof(opt_mysql_host) - 1);
-            opt_mysql_host[sizeof(opt_mysql_host) - 1] = '\0';
-        }
-        else if (strcmp(key, "mysql_database") == 0)
-        {
-            strncpy(opt_mysql_database, val, sizeof(opt_mysql_database) - 1);
-            opt_mysql_database[sizeof(opt_mysql_database) - 1] = '\0';
-        }
-        else if (strcmp(key, "mysql_user") == 0)
-        {
-            strncpy(opt_mysql_user, val, sizeof(opt_mysql_user) - 1);
-            opt_mysql_user[sizeof(opt_mysql_user) - 1] = '\0';
-        }
-        else if (strcmp(key, "mysql_password") == 0)
-        {
-            strncpy(opt_mysql_password, val, sizeof(opt_mysql_password) - 1);
-            opt_mysql_password[sizeof(opt_mysql_password) - 1] = '\0';
-        }
-        else if (strcmp(key, "mysql_port") == 0)
-        {
-            opt_mysql_port = atoi(val);
-        }
+        else if (!strcmp(key, "interface_name"))
+            safe_strcpy(opt_interface_name, sizeof(opt_interface_name), val);
+
+        else if (!strcmp(key, "threads"))
+            opt_threads = parse_u8(val);
+
+        else if (!strcmp(key, "extract_all"))
+            opt_extract_all = parse_bool(val);
+
+        /* ---------- CAPTURE ---------- */
+
+        else if (!strcmp(key, "caplen"))
+            opt_caplen = parse_u16(val);
+
+        else if (!strcmp(key, "update_timeout"))
+            opt_update_timeout = parse_u16(val);
+
+        else if (!strcmp(key, "bye_timeout"))
+            opt_bye_timeout = parse_u16(val);
+
+        else if (!strcmp(key, "ring_buffer_size"))
+            opt_ring_buffer_size = parse_u32(val);
+
+        /* ---------- INPUT ---------- */
+
+        else if (!strcmp(key, "input_file"))
+            safe_strcpy(opt_input_files, sizeof(opt_input_files), val);
+
+        /* ---------- MYSQL ---------- */
+
+        else if (!strcmp(key, "mysql_host"))
+            safe_strcpy(opt_mysql_host, sizeof(opt_mysql_host), val);
+
+        else if (!strcmp(key, "mysql_database"))
+            safe_strcpy(opt_mysql_database, sizeof(opt_mysql_database), val);
+
+        else if (!strcmp(key, "mysql_user"))
+            safe_strcpy(opt_mysql_user, sizeof(opt_mysql_user), val);
+
+        else if (!strcmp(key, "mysql_password"))
+            safe_strcpy(opt_mysql_password, sizeof(opt_mysql_password), val);
+
+        else if (!strcmp(key, "mysql_port"))
+            opt_mysql_port = parse_u16(val);
     }
 
     fclose(fp);
 }
 
 /* =========================
- MAIN FUNCTION
+ MAIN
  ========================= */
+
 int main(int argc, char *argv[])
 {
     openlog("radius_parser", LOG_PID | LOG_CONS, LOG_USER);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "Radius parser started");
 
-    syslog(LOG_INFO, "Radius parser started");
-
-    for (int i = 1; i < argc; i++)
+    /* =========================
+     LOAD CONFIG FIRST
+     ========================= */
+    for (int i = 1; i < argc - 1; ++i)
     {
-        if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config-file") == 0) && i + 1 < argc)
+        if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--config-file"))
         {
-            strncpy(opt_config_file, argv[i + 1], sizeof(opt_config_file) - 1);
-            opt_config_file[sizeof(opt_config_file) - 1] = '\0';
+            safe_strcpy(opt_config_file, sizeof(opt_config_file), argv[i + 1]);
+            load_config(opt_config_file);
             break;
         }
     }
 
-    if (opt_config_file[0] != '\0')
+    /* =========================
+     CLI OVERRIDES
+     ========================= */
+    for (int i = 1; i < argc; ++i)
     {
-        load_config(opt_config_file);
-    }
-
-    for (int i = 1; i < argc; i++)
-    {
-
         ArgType type = get_arg_type(argv[i]);
-
         switch (type)
         {
-        case ARG_OUTPUT:
+        case ARG_VERBOSE:
             if (i + 1 < argc)
-            {
-                strncpy(opt_output_folder, argv[++i], sizeof(opt_output_folder) - 1);
-                opt_output_folder[sizeof(opt_output_folder) - 1] = '\0';
-            }
-
+                opt_verbosity = parse_u8(argv[++i]);
             break;
 
         case ARG_INTERFACE:
             if (i + 1 < argc)
-            {
-                strncpy(opt_interface_name, argv[++i], sizeof(opt_interface_name) - 1);
-                opt_interface_name[sizeof(opt_interface_name) - 1] = '\0';
-            }
+                safe_strcpy(opt_interface_name, sizeof(opt_interface_name), argv[++i]);
             break;
 
         case ARG_THREADS:
@@ -336,22 +378,17 @@ int main(int argc, char *argv[])
 
         case ARG_CGNAT_FILE:
             if (i + 1 < argc)
-            {
-                strncpy(opt_cgnat_file_path, argv[++i], sizeof(opt_cgnat_file_path) - 1);
-                opt_cgnat_file_path[sizeof(opt_cgnat_file_path) - 1] = '\0';
-            }
+                safe_strcpy(opt_cgnat_file_path, sizeof(opt_cgnat_file_path), argv[++i]);
             break;
 
         case ARG_WHITELIST_FILE:
             if (i + 1 < argc)
-            {
-                strncpy(opt_whitelist_file_path, argv[++i], sizeof(opt_whitelist_file_path) - 1);
-                opt_whitelist_file_path[sizeof(opt_whitelist_file_path) - 1] = '\0';
-            }
+                safe_strcpy(opt_whitelist_file_path, sizeof(opt_whitelist_file_path), argv[++i]);
             break;
 
         case ARG_EXTRACT_ALL:
-            opt_extract_all = parse_bool(argv[++i]);
+            if (i + 1 < argc)
+                opt_extract_all = parse_bool(argv[++i]);
             break;
 
         case ARG_CAPLEN:
@@ -376,148 +413,131 @@ int main(int argc, char *argv[])
 
         case ARG_INPUT_FILE:
             if (i + 1 < argc)
-            {
-                strncpy(opt_input_files, argv[++i], sizeof(opt_input_files) - 1);
-                opt_input_files[sizeof(opt_input_files) - 1] = '\0';
-            }
+                safe_strcpy(opt_input_files, sizeof(opt_input_files), argv[++i]);
+            break;
+
+        case ARG_MYSQL_HOST:
+            if (i + 1 < argc)
+                safe_strcpy(opt_mysql_host, sizeof(opt_mysql_host), argv[++i]);
+            break;
+
+        case ARG_MYSQL_DATABASE:
+            if (i + 1 < argc)
+                safe_strcpy(opt_mysql_database, sizeof(opt_mysql_database), argv[++i]);
+            break;
+
+        case ARG_MYSQL_USER:
+            if (i + 1 < argc)
+                safe_strcpy(opt_mysql_user, sizeof(opt_mysql_user), argv[++i]);
+            break;
+
+        case ARG_MYSQL_PASSWORD:
+            if (i + 1 < argc)
+                safe_strcpy(opt_mysql_password, sizeof(opt_mysql_password), argv[++i]);
+            break;
+
+        case ARG_MYSQL_PORT:
+            if (i + 1 < argc)
+                opt_mysql_port = parse_u16(argv[++i]);
             break;
 
         default:
             break;
         }
     }
-    /* ---------------- DATA LOADING ---------------- */
 
-    DBConfig dbcfg;
-
-    memset(&dbcfg, 0, sizeof(DBConfig));
-
-    dbcfg.enabled =
-        (opt_mysql_host[0] != '\0' &&
-         opt_mysql_database[0] != '\0');
-
-    snprintf(dbcfg.host,
-             sizeof(dbcfg.host),
-             "%s",
-             opt_mysql_host);
-
-    snprintf(dbcfg.user,
-             sizeof(dbcfg.user),
-             "%s",
-             opt_mysql_user);
-
-    snprintf(dbcfg.password,
-             sizeof(dbcfg.password),
-             "%s",
-             opt_mysql_password);
-
-    snprintf(dbcfg.database,
-             sizeof(dbcfg.database),
-             "%s",
-             opt_mysql_database);
-
+    /* =========================
+     DATABASE INIT
+     ========================= */
+    DBConfig dbcfg = {0};
+    dbcfg.enabled = (opt_mysql_host[0] && opt_mysql_database[0]);
+    safe_strcpy(dbcfg.host, sizeof(dbcfg.host), opt_mysql_host);
+    safe_strcpy(dbcfg.user, sizeof(dbcfg.user), opt_mysql_user);
+    safe_strcpy(dbcfg.password, sizeof(dbcfg.password), opt_mysql_password);
+    safe_strcpy(dbcfg.database, sizeof(dbcfg.database), opt_mysql_database);
     dbcfg.port = opt_mysql_port;
-
     db_init(&dbcfg);
 
-    /*
-     * Priority:
-     * DB > FILE
-     */
-
+    /* =========================
+     DATA LOADING
+     ========================= */
     if (db_is_enabled())
     {
-        syslog(LOG_INFO,
-               "Loading data from DB");
-        if (db_load_whitelist() != 0)
-        {
-            syslog(LOG_ERR,
-                   "Failed loading whitelist from DB");
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Loading data from DB");
 
-            return -1;
+        if (__builtin_expect(db_load_whitelist() != 0, 0))
+        {
+            syslog(LOG_ERR, "Failed loading whitelist from DB");
+            return EXIT_FAILURE;
         }
 
-        if (db_load_cgnat() != 0)
+        if (__builtin_expect(db_load_cgnat() != 0, 0))
         {
-            syslog(LOG_ERR,
-                   "Failed loading CGNAT from DB");
-
-            return -1;
+            syslog(LOG_ERR, "Failed loading CGNAT from DB");
+            return EXIT_FAILURE;
         }
     }
     else
     {
-        syslog(LOG_INFO,
-               "Loading data from files");
-
-        if (opt_whitelist_file_path[0] == '\0')
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Loading data from files");
+        if (!opt_whitelist_file_path[0] || !opt_cgnat_file_path[0])
         {
-            syslog(LOG_ERR,
-                   "Whitelist file missing");
-
-            return -1;
+            syslog(LOG_ERR, "Whitelist/CGNAT file missing");
+            return EXIT_FAILURE;
         }
 
-        if (opt_cgnat_file_path[0] == '\0')
+        if (__builtin_expect(wl_load_from_file(opt_whitelist_file_path) != 0, 0))
         {
-            syslog(LOG_ERR,
-                   "CGNAT file missing");
-
-            return -1;
+            syslog(LOG_ERR, "Failed loading whitelist file");
+            return EXIT_FAILURE;
         }
 
-        if (wl_load_from_file(
-                opt_whitelist_file_path) != 0)
+        if (__builtin_expect(cgnat_load_from_csv(opt_cgnat_file_path) != 0, 0))
         {
-            syslog(LOG_ERR,
-                   "Failed loading whitelist file");
-
-            return -1;
-        }
-
-        if (cgnat_load_from_csv(
-                opt_cgnat_file_path) != 0)
-        {
-            syslog(LOG_ERR,
-                   "Failed loading CGNAT CSV");
-
-            return -1;
+            syslog(LOG_ERR, "Failed loading CGNAT CSV");
+            return EXIT_FAILURE;
         }
     }
 
-    /* ---------------- START SYSTEM ---------------- */
-
+    /* =========================
+     START WORKERS
+     ========================= */
     start_worker_threads();
 
-    if (opt_input_files[0] != '\0')
+    /* =========================
+     START INPUT
+     ========================= */
+    if (opt_input_files[0])
     {
-        syslog(LOG_INFO, "Processing input file: %s", opt_input_files);
-        // start_file_processing();
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Processing input file: %s", opt_input_files);
+
+        /* start_file_processing(); */
     }
-    else if (opt_interface_name[0] != '\0')
+    else
     {
         start_interface_capture();
     }
-    else
-    {
-        syslog(LOG_ERR, "No input source provided");
-    }
 
-    // wait for shutdown signal
+    /* =========================
+     WAIT FOR SHUTDOWN
+     ========================= */
     while (g_running)
     {
         sleep(1);
     }
 
-    /* WAIT FOR WORKERS TO FINISH */
-    syslog(LOG_INFO, "Waiting for worker threads...");
-
-    for (int i = 0; i < opt_threads; i++)
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "Waiting for worker threads...");
+    for (uint8_t i = 0; i < opt_threads; ++i)
+    {
         pthread_join(worker_threads[i], NULL);
+    }
 
     db_close();
     cleanup_queue(&global_queue);
     closelog();
-
-    return 0;
+    return EXIT_SUCCESS;
 }

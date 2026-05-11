@@ -157,10 +157,10 @@ stamp-h1
 
 # build
 build/
-src/.deps/
+*.deps
 src/*.o
 src/*.Po
-src/.dirstamp
+*.dirstamp
 
 # binaries
 radius_parser

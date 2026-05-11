@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <pthread.h>
+#include <time.h>
 #include <sys/time.h>
 
 #include "parser.h"
@@ -15,7 +16,6 @@ typedef enum
     L4_UNKNOWN = 0,
     L4_TCP,
     L4_UDP
-
 } L4Protocol;
 
 /* =========================
@@ -101,14 +101,29 @@ typedef struct
 
 extern uint8_t opt_threads;
 extern volatile sig_atomic_t g_running;
-extern TaskQueue global_queue;
+extern TaskQueue global_queue __attribute__((aligned(64)));
 extern pthread_t worker_threads[MAX_THREADS];
 
+static inline void queue_signal_not_empty(TaskQueue *q)
+{
+    pthread_cond_signal(&q->not_empty);
+}
+
+static inline void queue_signal_not_full(TaskQueue *q)
+{
+    pthread_cond_signal(&q->not_full);
+}
+
+static inline uint64_t timespec_diff_ns(const struct timespec *start, const struct timespec *end)
+{
+    return (((uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ULL) + ((uint64_t)(end->tv_nsec - start->tv_nsec)));
+}
+
 void queue_init(TaskQueue *q);
-bool queue_push(TaskQueue *q, Task *task);
-bool queue_pop(TaskQueue *q, Task *task);
+bool queue_push(TaskQueue *restrict q, const Task *restrict task);
+bool queue_pop(TaskQueue *restrict q, Task *restrict task);
 void cleanup_queue(TaskQueue *q);
+void wake_worker_threads(void);
 void *worker_thread(void *arg);
-void wake_worker_threads();
-void start_worker_threads();
+void start_worker_threads(void);
 void submit_task(Task *task);

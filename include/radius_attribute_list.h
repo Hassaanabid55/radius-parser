@@ -140,7 +140,8 @@ static const RadiusAttributeMap g_radiusAttributeMap[] =
         {BASIC_LOCATION_POLICY_RULES, "Basic-Location-Policy-Rules"},
         {EXTENDED_LOCATION_POLICY_RULES, "Extended-Location-Policy-Rules"},
         {LOCATION_CAPABLE, "Location-Capable"},
-        {REQUESTED_LOCATION_INFO, "Requested-Location-Info"}};
+        {REQUESTED_LOCATION_INFO, "Requested-Location-Info"},
+};
 
 static inline const char *getRadiusAttributeName(uint16_t type)
 {

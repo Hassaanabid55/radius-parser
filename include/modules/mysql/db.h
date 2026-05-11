@@ -15,9 +15,11 @@ typedef struct
     uint16_t port;
 } DBConfig;
 
+extern uint8_t opt_verbosity;
+
 int db_init(DBConfig *cfg);
-void db_close();
 bool db_is_enabled();
 MYSQL *db_get_connection();
 int db_load_whitelist();
 int db_load_cgnat();
+void db_close();

@@ -1,14 +1,26 @@
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+
+#include "uthash.h"
 
 typedef struct
 {
     char msisdn[32];
-
     bool status;
-
 } WhitelistInfo;
 
-int wl_load_from_file(const char *path);
+typedef struct WlNode
+{
+    char msisdn[32];
+    WhitelistInfo info;
+    UT_hash_handle hh;
+} WlNode;
 
-bool wl_lookup(const char *msisdn,
-               WhitelistInfo *out);
+extern uint8_t opt_verbosity;
+
+int wl_load_from_file(const char *path);
+bool wl_lookup(const char *msisdn, WhitelistInfo *out);

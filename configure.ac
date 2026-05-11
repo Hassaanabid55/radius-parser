@@ -6,7 +6,7 @@ AC_PROG_CC
 
 AC_CONFIG_HEADERS([config.h])
 
-CFLAGS="$CFLAGS -D_GNU_SOURCE -Wall -Wextra -std=gnu11"
+CFLAGS="$CFLAGS -Wall -Wextra -std=gnu11"
 
 AC_SEARCH_LIBS([pcap_open_live], [pcap], [],
 [

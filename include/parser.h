@@ -20,8 +20,6 @@
 
 extern bool opt_extract_all;
 
-#define IS_FAST(type, flag) (opt_extract_all || (flag))
-
 typedef struct
 {
     const uint8_t *pData;
@@ -32,6 +30,29 @@ typedef struct
     uint8_t identifier;
 } RadiusPacket;
 
+static inline int logInvalidAvp(uint8_t type, uint8_t len, uint16_t offset)
+{
+    syslog(LOG_ERR, "Invalid AVP - Type=%u Len=%u Offset=%u", type, len, offset);
+    return -1;
+}
+
+static inline void ipv4_to_str(const uint8_t ip[4], char out[16])
+{
+    /*
+     * Faster than snprintf()
+     * Max IPv4 string length = 15 + NULL
+     */
+    int len = 0;
+    len += sprintf(out + len, "%u", ip[0]);
+    out[len++] = '.';
+    len += sprintf(out + len, "%u", ip[1]);
+    out[len++] = '.';
+    len += sprintf(out + len, "%u", ip[2]);
+    out[len++] = '.';
+    len += sprintf(out + len, "%u", ip[3]);
+    out[len] = '\0';
+}
+
 const char *getIpLayer(const char *pPacket, size_t len);
 const char *getUdpLayer(const char *pIpLayer, size_t len);
 uint16_t getUdpDstPort(const char *pStartOfUdpLayer);
@@ -40,5 +61,4 @@ void setCurrentLocalTime(struct tm *sTime);
 int sessionStart(UserSessionInfo *pSession);
 int sessionEnd(UserSessionInfo *pSession);
 int parseRadiusPkt(const char *pPacket, size_t len, RadiusPacket *radiusPkt);
-int logInvalidAvp(uint8_t type, uint8_t len, uint16_t offset);
 int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSession);

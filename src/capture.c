@@ -2,26 +2,31 @@
 
 pcap_t *g_pcap_handle = NULL;
 
-bool build_radius_task(Task *task, const struct pcap_pkthdr *header, const uint8_t *packet)
+/* =========================
+ BUILD TASK
+ ========================= */
+
+bool build_radius_task(Task *restrict task, const struct pcap_pkthdr *restrict header, const uint8_t *restrict packet)
 {
     memset(task, 0, sizeof(Task));
-    task->packet_length = header->caplen;
+    const uint32_t caplen = header->caplen;
+    task->packet_length = caplen;
     task->timestamp = header->ts;
 
     /*
-     * Ethernet
+     * Ethernet validation
      */
-
-    if (header->caplen < sizeof(struct ethhdr))
+    if (__builtin_expect(caplen < sizeof(struct ethhdr), 0))
     {
         return false;
     }
 
     task->pEthernet = packet;
-    struct ethhdr *eth =
-        (struct ethhdr *)packet;
-    task->ethertype = ntohs(eth->h_proto);
-    if (task->ethertype != ETH_P_IP)
+
+    const struct ethhdr *eth = (const struct ethhdr *)packet;
+    const uint16_t ethertype = ntohs(eth->h_proto);
+    task->ethertype = ethertype;
+    if (__builtin_expect(!is_ipv4_packet(ethertype), 1))
     {
         return false;
     }
@@ -29,152 +34,126 @@ bool build_radius_task(Task *task, const struct pcap_pkthdr *header, const uint8
     /*
      * IPv4
      */
-
+    task->ethernet_offset = 0;
     task->ip_offset = sizeof(struct ethhdr);
-    if (header->caplen <
-        task->ip_offset + sizeof(struct iphdr))
+    const struct iphdr *ip = (const struct iphdr *)(packet + task->ip_offset);
+    if (__builtin_expect(caplen < task->ip_offset + sizeof(struct iphdr), 0))
     {
         return false;
     }
 
-    task->pIp = packet + task->ip_offset;
-    struct iphdr *ip =
-        (struct iphdr *)task->pIp;
+    const uint8_t ip_hdr_len = (uint8_t)(ip->ihl << 2);
+    if (__builtin_expect(ip_hdr_len < sizeof(struct iphdr), 0))
+    {
+        return false;
+    }
+
+    task->ip_header_length = ip_hdr_len;
     task->ip_version = ip->version;
     task->ip_protocol = ip->protocol;
-    if (ip->protocol != IPPROTO_UDP)
+    if (__builtin_expect(!is_udp_packet(ip->protocol), 1))
     {
         return false;
     }
-    task->ip_header_length = ip->ihl * 4;
+
     task->src_ip = ip->saddr;
     task->dst_ip = ip->daddr;
+
+    task->pIp = (const uint8_t *)ip;
 
     /*
      * UDP
      */
-
-    task->udp_offset =
-        task->ip_offset + task->ip_header_length;
-    if (header->caplen <
-        task->udp_offset + sizeof(struct udphdr))
+    task->udp_offset = task->ip_offset + ip_hdr_len;
+    if (__builtin_expect(caplen < task->udp_offset + sizeof(struct udphdr), 0))
     {
         return false;
     }
-    task->pUdp = packet + task->udp_offset;
-    struct udphdr *udp =
-        (struct udphdr *)task->pUdp;
-    task->src_port = ntohs(udp->source);
-    task->dst_port = ntohs(udp->dest);
+
+    const struct udphdr *udp = (const struct udphdr *)(packet + task->udp_offset);
+    task->pUdp = (const uint8_t *)udp;
+    const uint16_t src_port = ntohs(udp->source);
+    const uint16_t dst_port = ntohs(udp->dest);
+    task->src_port = src_port;
+    task->dst_port = dst_port;
 
     /*
-     * RADIUS port validation
+     * Validate RADIUS ports
      */
-
-    if (task->src_port == RADIUS_ACCT_PORT_1 ||
-        task->dst_port == RADIUS_ACCT_PORT_1)
-    {
-        task->packet_type = PKT_RADIUS_AUTH;
-    }
-    else if (task->src_port == RADIUS_ACCT_PORT_2 ||
-             task->dst_port == RADIUS_ACCT_PORT_2)
-    {
-        task->packet_type = PKT_RADIUS_ACCT;
-    }
-    else
+    if (__builtin_expect(!is_radius_port(src_port, dst_port, &task->packet_type), 1))
     {
         return false;
     }
 
     /*
-     * RADIUS layer
+     * RADIUS
      */
-
-    task->radius_offset =
-        task->udp_offset + sizeof(struct udphdr);
-
-    if (header->caplen <
-        (bpf_u_int32)(task->radius_offset + RADIUS_HDR_LEN))
+    task->radius_offset = task->udp_offset + sizeof(struct udphdr);
+    const uint32_t min_radius_size = (uint32_t)(task->radius_offset + RADIUS_HDR_LEN);
+    if (__builtin_expect(caplen < min_radius_size, 0))
     {
         return false;
     }
 
-    task->pRadius =
-        packet + task->radius_offset;
+    const uint8_t *radius = packet + task->radius_offset;
+    task->pRadius = radius;
 
     /*
      * Validate RADIUS length
      */
-
-    uint16_t radiusLen;
-
-    memcpy(&radiusLen,
-           task->pRadius + 2,
-           sizeof(radiusLen));
-
-    radiusLen = ntohs(radiusLen);
-    if (radiusLen < RADIUS_HDR_LEN)
+    uint16_t radius_len;
+    memcpy(&radius_len, radius + 2, sizeof(uint16_t));
+    radius_len = ntohs(radius_len);
+    if (__builtin_expect(radius_len < RADIUS_HDR_LEN, 0))
     {
         return false;
     }
-    if (task->radius_offset + radiusLen >
-        header->caplen)
+
+    if (__builtin_expect(task->radius_offset + radius_len > caplen, 0))
     {
         return false;
     }
-    task->radius_length = radiusLen;
-
+    task->radius_length = radius_len;
     return true;
 }
 
 /* =========================
  PACKET CALLBACK
  ========================= */
-void packet_handler(unsigned char *user,
-                    const struct pcap_pkthdr *header,
-                    const unsigned char *packet)
+
+void packet_handler(unsigned char *user, const struct pcap_pkthdr *header, const unsigned char *packet)
 {
     (void)user;
-
-    if (!g_running)
+    if (__builtin_expect(!g_running, 0))
     {
         return;
     }
 
     Task task;
-
-    if (!build_radius_task(&task, header, packet))
+    if (__builtin_expect(!build_radius_task(&task, header, packet), 1))
     {
         return;
     }
 
     /*
-     * Copy packet
+     * Allocate packet memory
      */
-
-    task.data = malloc(header->caplen);
-
-    if (!task.data)
+    uint8_t *pkt = malloc(header->caplen);
+    if (__builtin_expect(pkt == NULL, 0))
     {
         return;
     }
 
-    memcpy(task.data,
-           packet,
-           header->caplen);
+    memcpy(pkt, packet, header->caplen);
+    task.data = pkt;
 
     /*
-     * Rebase pointers after memcpy
+     * Rebase pointers
      */
-    task.pEthernet =
-        task.data + task.ethernet_offset;
-    task.pIp =
-        task.data + task.ip_offset;
-    task.pUdp =
-        task.data + task.udp_offset;
-    task.pRadius =
-        task.data + task.radius_offset;
-
+    task.pEthernet = pkt + task.ethernet_offset;
+    task.pIp = pkt + task.ip_offset;
+    task.pUdp = pkt + task.udp_offset;
+    task.pRadius = pkt + task.radius_offset;
     submit_task(&task);
 }
 
@@ -182,163 +161,104 @@ void packet_handler(unsigned char *user,
  INTERFACE CAPTURE
  ========================= */
 
-void start_interface_capture()
+void start_interface_capture(void)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
-
-    while (g_running)
+    while (__builtin_expect(g_running, 1))
     {
         pcap_t *handle = pcap_create(opt_interface_name, errbuf);
 
-        if (!handle)
+        if (__builtin_expect(handle == NULL, 0))
         {
-            syslog(LOG_ERR,
-                   "pcap_create failed: %s",
-                   errbuf);
-
+            syslog(LOG_ERR, "pcap_create failed: %s", errbuf);
             sleep(1);
-
             continue;
         }
 
         /*
-         * Configure capture
+         * Snap length
          */
-
-        if (pcap_set_snaplen(handle, opt_caplen) != 0)
+        if (__builtin_expect(pcap_set_snaplen(handle, opt_caplen) != 0, 0))
         {
-            syslog(LOG_ERR,
-                   "pcap_set_snaplen failed");
-
+            syslog(LOG_ERR, "pcap_set_snaplen failed");
             pcap_close(handle);
-
             sleep(1);
-
             continue;
         }
 
         /*
-         * Promiscuous mode
+         * Promisc
          */
-
-        if (pcap_set_promisc(handle, 1) != 0)
-        {
-            syslog(LOG_ERR,
-                   "pcap_set_promisc failed");
-
-            pcap_close(handle);
-
-            sleep(1);
-
-            continue;
-        }
+        pcap_set_promisc(handle, 1);
 
         /*
-         * Immediate mode for low latency
+         * Immediate mode
          */
-
 #ifdef PCAP_ERROR_ACTIVATED
         pcap_set_immediate_mode(handle, 1);
 #endif
 
         /*
-         * Set interface kernel ring buffer size
+         * Kernel buffer
          */
-
-        if (pcap_set_buffer_size(handle,
-                                 opt_ring_buffer_size) != 0)
-        {
-            syslog(LOG_ERR,
-                   "pcap_set_buffer_size failed");
-        }
+        pcap_set_buffer_size(handle, opt_ring_buffer_size);
 
         /*
-         * Read timeout
+         * Non-buffered reads
          */
-
-        if (pcap_set_timeout(handle, 0) != 0)
-        {
-            syslog(LOG_ERR,
-                   "pcap_set_timeout failed");
-        }
+        pcap_set_timeout(handle, 0);
 
         /*
-         * Activate interface
+         * Activate
          */
-
-        int ret = pcap_activate(handle);
-
-        if (ret < 0)
+        const int ret = pcap_activate(handle);
+        if (__builtin_expect(ret < 0, 0))
         {
-            syslog(LOG_ERR,
-                   "pcap_activate failed: %s",
-                   pcap_geterr(handle));
-
+            syslog(LOG_ERR, "pcap_activate failed: %s", pcap_geterr(handle));
             pcap_close(handle);
-
             sleep(1);
-
             continue;
         }
-
         g_pcap_handle = handle;
-
-        syslog(LOG_INFO,
-               "Listening on interface: %s",
-               opt_interface_name);
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Listening on interface: %s", opt_interface_name);
 
         /*
-         * Persistent capture loop
+         * Main capture loop
          */
-
-        while (g_running)
+        while (__builtin_expect(g_running, 1))
         {
-            ret = pcap_dispatch(handle,
-                                -1,
-                                packet_handler,
-                                NULL);
-
-            if (ret == PCAP_ERROR)
+            const int dispatch_ret = pcap_dispatch(handle, -1, packet_handler, NULL);
+            if (__builtin_expect(dispatch_ret == PCAP_ERROR, 0))
             {
-                syslog(LOG_ERR,
-                       "pcap_dispatch error: %s",
-                       pcap_geterr(handle));
-
+                syslog(LOG_ERR, "pcap_dispatch error: %s", pcap_geterr(handle));
                 break;
             }
 
-            if (ret == PCAP_ERROR_BREAK)
+            if (__builtin_expect(dispatch_ret == PCAP_ERROR_BREAK, 0))
             {
                 break;
             }
         }
 
-        syslog(LOG_INFO,
-               "Capture loop exited, closing interface...");
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Capture stopped");
         pcap_close(handle);
-
         g_pcap_handle = NULL;
-
-        /*
-         * Retry interface setup
-         */
-
-        if (g_running)
+        if (__builtin_expect(g_running, 1))
         {
-            syslog(LOG_INFO,
-                   "Reconnecting capture interface...");
-
             sleep(1);
         }
     }
 }
 
-void stop_interface_capture()
+void stop_interface_capture(void)
 {
-    if (g_pcap_handle)
+    pcap_t *handle = g_pcap_handle;
+    if (handle)
     {
-        pcap_breakloop(g_pcap_handle);
-        pcap_close(g_pcap_handle);
         g_pcap_handle = NULL;
+        pcap_breakloop(handle);
+        pcap_close(handle);
     }
 }
