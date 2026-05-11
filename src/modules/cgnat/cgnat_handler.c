@@ -5,7 +5,6 @@ static CgnatNode *g_cgnat_map = NULL;
 /* =========================
  LOAD FROM CSV
  ========================= */
-
 int cgnat_load_from_csv(const char *path)
 {
     FILE *fp = fopen(path, "r");
@@ -57,7 +56,6 @@ int cgnat_load_from_csv(const char *path)
 /* =========================
  FAST LOOKUP (HOT PATH)
  ========================= */
-
 bool cgnat_lookup(const char *inside_ip, CgnatEntry *out)
 {
     if (__builtin_expect(!inside_ip, 0))

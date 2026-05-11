@@ -38,7 +38,6 @@ typedef enum
 /* =========================
  CONFIGURATION OPTIONS
  ========================= */
-
 char opt_config_file[256] = "";
 char opt_cgnat_file_path[256] = "";
 char opt_whitelist_file_path[256] = "";
@@ -48,8 +47,8 @@ char opt_mysql_host[128] = "";
 char opt_mysql_database[64] = "";
 char opt_mysql_user[64] = "";
 char opt_mysql_password[64] = "";
+char opt_threads_str[128] = "";
 
-uint8_t opt_threads = 1;
 uint8_t opt_verbosity = 0;
 uint16_t opt_caplen = 3200;
 uint16_t opt_update_timeout = 900;
@@ -62,13 +61,13 @@ bool opt_extract_all = false;
 /* =========================
  GLOBALS
  ========================= */
-
 volatile sig_atomic_t g_running = 1;
+int cores[MAX_CORE_COUNT];
+uint16_t core_count;
 
 /* =========================
  FAST SAFE STRING COPY
  ========================= */
-
 static inline void safe_strcpy(char *dst, size_t dst_size, const char *src)
 {
     if (__builtin_expect(!dst || !src || dst_size == 0, 0))
@@ -81,7 +80,6 @@ static inline void safe_strcpy(char *dst, size_t dst_size, const char *src)
 /* =========================
  SIGNAL HANDLER
  ========================= */
-
 void signal_handler(int sig)
 {
     if (sig != SIGINT && sig != SIGTERM)
@@ -104,7 +102,6 @@ void signal_handler(int sig)
 /* =========================
  ARGUMENT PARSING
  ========================= */
-
 static inline ArgType get_arg_type(const char *arg)
 {
     if (!arg)
@@ -191,7 +188,6 @@ static inline ArgType get_arg_type(const char *arg)
 /* =========================
  FAST PARSERS
  ========================= */
-
 static inline uint8_t parse_u8(const char *s)
 {
     return (uint8_t)strtoul(s, NULL, 10);
@@ -218,7 +214,6 @@ static inline bool parse_bool(const char *s)
 /* =========================
  STRING TRIM
  ========================= */
-
 static inline char *trim(char *s)
 {
     if (!s)
@@ -244,7 +239,6 @@ static inline char *trim(char *s)
 /* =========================
  CONFIG LOADER
  ========================= */
-
 void load_config(const char *path)
 {
     FILE *fp = fopen(path, "r");
@@ -282,7 +276,7 @@ void load_config(const char *path)
             safe_strcpy(opt_interface_name, sizeof(opt_interface_name), val);
 
         else if (!strcmp(key, "threads"))
-            opt_threads = parse_u8(val);
+            safe_strcpy(opt_threads_str, sizeof(opt_threads_str), val);
 
         else if (!strcmp(key, "extract_all"))
             opt_extract_all = parse_bool(val);
@@ -330,7 +324,6 @@ void load_config(const char *path)
 /* =========================
  MAIN
  ========================= */
-
 int main(int argc, char *argv[])
 {
     openlog("radius_parser", LOG_PID | LOG_CONS, LOG_USER);
@@ -373,7 +366,7 @@ int main(int argc, char *argv[])
 
         case ARG_THREADS:
             if (i + 1 < argc)
-                opt_threads = parse_u8(argv[++i]);
+                safe_strcpy(opt_threads_str, sizeof(opt_threads_str), argv[++i]);
             break;
 
         case ARG_CGNAT_FILE:
@@ -532,7 +525,7 @@ int main(int argc, char *argv[])
     if (opt_verbosity > 0)
         syslog(LOG_INFO, "Waiting for worker threads...");
 
-    for (uint8_t i = 0; i < opt_threads; ++i)
+    for (uint8_t i = 0; i < core_count; ++i)
     {
         pthread_join(worker_threads[i], NULL);
     }

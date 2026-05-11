@@ -15,6 +15,7 @@
 #define RADIUS_LENGTH_FIELD_LENGTH 2         /**< Number of bytes reserved for length field */
 #define RADIUS_IDENTIFIER_FIELD_LENGTH 1     /**< Number of bytes reserved for identifier field */
 #define RADIUS_AUTHENTICATOR_FIELD_LENGTH 16 /**< Number of bytes reserved for authenticator field */
+#define MAX_CORE_COUNT 256
 
 #define USER_NAME 1                            /**< text [RFC2865] */
 #define USER_PASSWORD 2                        /**< string [RFC2865]*/

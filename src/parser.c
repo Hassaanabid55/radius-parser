@@ -386,7 +386,6 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             }
             break;
         }
-
         } /* switch */
         offset += len;
     } /* while */

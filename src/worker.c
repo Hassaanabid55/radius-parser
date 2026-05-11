@@ -1,8 +1,8 @@
-#define _GNU_SOURCE
-
 #include "worker.h"
 
 TaskQueue global_queue __attribute__((aligned(64)));
+SessionNode *g_session_map = NULL;
+pthread_mutex_t g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t worker_threads[MAX_THREADS];
 pthread_t stats_worker_threads;
 static uint64_t g_session_count = 0;
@@ -98,6 +98,96 @@ void cleanup_queue(TaskQueue *q)
 /* =========================
  THREAD CONTROL
  ========================= */
+bool parse_core_ids(const char *core_list, int *cores, uint16_t *core_count)
+{
+    if (!core_list || !cores || !core_count)
+    {
+        return false;
+    }
+
+    *core_count = 0;
+    char buffer[512];
+    strncpy(buffer, core_list, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    char *saveptr = NULL;
+    char *token = strtok_r(buffer, ",", &saveptr);
+    while (token)
+    {
+        while (*token == ' ' || *token == '\t')
+        {
+            token++;
+        }
+        if (*token == '\0')
+        {
+            token = strtok_r(NULL, ",", &saveptr);
+            continue;
+        }
+        char *dash = strchr(token, '-');
+
+        if (!dash)
+        {
+            char *endptr = NULL;
+            long core = strtol(token, &endptr, 10);
+            if (*endptr != '\0' || core < 0)
+            {
+                syslog(LOG_ERR, "Invalid core specification: %s", token);
+                return false;
+            }
+            if (*core_count >= MAX_CORE_COUNT)
+            {
+                syslog(LOG_ERR, "Too many cores");
+                return false;
+            }
+            cores[(*core_count)++] = (int)core;
+        }
+        else
+        {
+            *dash = '\0';
+            const char *start_str = token;
+            const char *end_str = dash + 1;
+            char *endptr1 = NULL;
+            char *endptr2 = NULL;
+            long start = strtol(start_str, &endptr1, 10);
+            long end = strtol(end_str, &endptr2, 10);
+            if (*endptr1 != '\0' || *endptr2 != '\0' || start < 0 || end < 0)
+            {
+                syslog(LOG_ERR, "Invalid core range: %s-%s", start_str, end_str);
+                return false;
+            }
+            if (start > end)
+            {
+                syslog(LOG_ERR, "Invalid core range: %ld-%ld", start, end);
+                return false;
+            }
+            for (long i = start; i <= end; i++)
+            {
+                if (*core_count >= MAX_CORE_COUNT)
+                {
+                    syslog(LOG_ERR, "Too many cores");
+                    return false;
+                }
+                cores[(*core_count)++] = (int)i;
+            }
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+    for (uint16_t i = 0; i < *core_count; i++)
+    {
+        for (uint16_t j = i + 1; j < *core_count;)
+        {
+            if (cores[i] == cores[j])
+            {
+                memmove(&cores[j], &cores[j + 1], ((*core_count - j - 1) * sizeof(int)));
+                (*core_count)--;
+            }
+            else
+            {
+                j++;
+            }
+        }
+    }
+    return true;
+}
 
 void wake_worker_threads(void)
 {
@@ -129,7 +219,12 @@ void session_print_stats()
  ========================= */
 void *worker_thread(void *arg)
 {
-    const int id = (intptr_t)arg;
+    int core_id = *(int *)arg;
+    if (bind_thread_to_core(core_id) != 0)
+    {
+        return NULL;
+    }
+
     Task task;
     struct timespec start;
     struct timespec end;
@@ -137,8 +232,6 @@ void *worker_thread(void *arg)
     uint64_t total_processing_ns = 0;
     uint64_t parse_failures = 0;
     uint64_t attribute_failures = 0;
-    if (opt_verbosity > 0)
-        syslog(LOG_INFO, "Worker thread started (ID: %d)", id);
     while (__builtin_expect(g_running, 1))
     {
         if (__builtin_expect(!queue_pop(&global_queue, &task), 0))
@@ -157,6 +250,7 @@ void *worker_thread(void *arg)
                 {
                     printUserSession(&session);
                 }
+                pthread_mutex_lock(&g_session_mutex);
                 SessionNode *node = session_find(session.acAccountSessionId);
                 g_session_lookups++;
                 switch (session.u8AccountStatusType)
@@ -205,6 +299,7 @@ void *worker_thread(void *arg)
                 default:
                     break;
                 }
+                pthread_mutex_unlock(&g_session_mutex);
             }
             else
             {
@@ -220,12 +315,11 @@ void *worker_thread(void *arg)
         total_packets++;
         free(task.data);
     }
-
     const double total_ms = (double)total_processing_ns / 1000000.0;
     const double avg_us = (total_packets > 0) ? ((double)total_processing_ns / (double)total_packets / 1000.0) : 0.0;
     const double throughput_pps = (total_processing_ns > 0) ? ((double)total_packets / ((double)total_processing_ns / 1000000000.0)) : 0.0;
     if (opt_verbosity > 1)
-        syslog(LOG_INFO, "Worker %d exiting | Packets=%lu | ParseFail=%lu | AttrFail=%lu | Total=%.3f ms | Avg=%.3f us/pkt | Throughput=%.2f pkt/sec", id, total_packets, parse_failures, attribute_failures, total_ms, avg_us, throughput_pps);
+        syslog(LOG_INFO, "Worker %d exiting | Packets=%lu | ParseFail=%lu | AttrFail=%lu | Total=%.3f ms | Avg=%.3f us/pkt | Throughput=%.2f pkt/sec", core_id, total_packets, parse_failures, attribute_failures, total_ms, avg_us, throughput_pps);
     return NULL;
 }
 
@@ -245,13 +339,13 @@ void *session_stats_thread(void *arg)
 /* =========================
  THREAD INITIALIZATION
  ========================= */
-
 void start_worker_threads(void)
 {
     queue_init(&global_queue);
-    for (uint8_t i = 0; i < opt_threads; i++)
+    parse_core_ids(opt_threads_str, cores, &core_count);
+    for (uint16_t i = 0; i < core_count; i++)
     {
-        pthread_create(&worker_threads[i], NULL, worker_thread, (void *)(intptr_t)i);
+        pthread_create(&worker_threads[i], NULL, worker_thread, &cores[i]);
     }
     if (opt_verbosity > 1)
         pthread_create(&stats_worker_threads, NULL, session_stats_thread, (void *)(intptr_t)0);
@@ -260,7 +354,6 @@ void start_worker_threads(void)
 /* =========================
  TASK SUBMISSION
  ========================= */
-
 void submit_task(Task *task)
 {
     if (__builtin_expect(!queue_push(&global_queue, task), 0))

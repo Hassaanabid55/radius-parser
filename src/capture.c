@@ -5,7 +5,6 @@ pcap_t *g_pcap_handle = NULL;
 /* =========================
  BUILD TASK
  ========================= */
-
 bool build_radius_task(Task *restrict task, const struct pcap_pkthdr *restrict header, const uint8_t *restrict packet)
 {
     memset(task, 0, sizeof(Task));
@@ -120,7 +119,6 @@ bool build_radius_task(Task *restrict task, const struct pcap_pkthdr *restrict h
 /* =========================
  PACKET CALLBACK
  ========================= */
-
 void packet_handler(unsigned char *user, const struct pcap_pkthdr *header, const unsigned char *packet)
 {
     (void)user;
@@ -160,7 +158,6 @@ void packet_handler(unsigned char *user, const struct pcap_pkthdr *header, const
 /* =========================
  INTERFACE CAPTURE
  ========================= */
-
 void start_interface_capture(void)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
