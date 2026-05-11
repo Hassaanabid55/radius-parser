@@ -29,8 +29,8 @@ int wl_load_from_file(const char *path)
             continue;
 
         memset(node, 0, sizeof(WlNode));
-        strncpy(node->msisdn, msisdn, sizeof(node->msisdn) - 1);
-        strncpy(node->info.msisdn, msisdn, sizeof(node->info.msisdn) - 1);
+        strncpy(node->msisdn, msisdn, sizeof(node->msisdn));
+        strncpy(node->info.msisdn, msisdn, sizeof(node->info.msisdn));
         node->info.status = (status != 0);
         HASH_ADD_STR(g_wl_map, msisdn, node);
     }

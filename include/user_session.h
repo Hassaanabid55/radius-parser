@@ -35,7 +35,6 @@ typedef struct
     uint8_t u8FramedIpv4PubAddress[IPV4_OCTETS];
     uint16_t portStart;
     uint16_t portEnd;
-    uint16_t radiusLength;
     struct tm sSessionStartTime;
     struct tm sSessionEndTime;
     // ================= FULL MODE STORAGE =================

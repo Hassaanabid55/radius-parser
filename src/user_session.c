@@ -16,11 +16,6 @@ void printUserSession(const UserSessionInfo *s)
     print_string_field("Session Type", session_type_str(s->nSessionIndicator), 1);
 
     /*
-     * Radius Length
-     */
-    print_uint_field("Radius Length", s->radiusLength, 1);
-
-    /*
      * Session ID
      */
     print_string_field("Session ID", s->acAccountSessionId, s->u64ValidAttributes & VALID_ACCT_SESSION_ID);

@@ -531,10 +531,13 @@ int main(int argc, char *argv[])
 
     if (opt_verbosity > 0)
         syslog(LOG_INFO, "Waiting for worker threads...");
+
     for (uint8_t i = 0; i < opt_threads; ++i)
     {
         pthread_join(worker_threads[i], NULL);
     }
+    if (opt_verbosity > 1)
+        pthread_join(stats_worker_threads, NULL);
 
     db_close();
     cleanup_queue(&global_queue);
