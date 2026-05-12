@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <sys/syslog.h>
 #include <time.h>
+#include <stdarg.h>
 #include <arpa/inet.h>
 
 #include "radius_attribute_list.h"
@@ -60,110 +61,6 @@ static inline const char *session_type_str(uint8_t type)
 
     default:
         return "UNKNOWN";
-    }
-}
-
-static inline void print_string_field(const char *label, const char *value, int valid)
-{
-    syslog(LOG_INFO, "│ %-24s : %s", label, valid ? value : "[not present]");
-}
-
-static inline void print_uint_field(const char *label, uint32_t value, int valid)
-{
-    if (__builtin_expect(valid, 1))
-    {
-        syslog(LOG_INFO, "│ %-24s : %u", label, value);
-    }
-    else
-    {
-        syslog(LOG_INFO, "│ %-24s : [not present]", label);
-    }
-}
-
-static inline void print_ipv4_field(const char *label, const uint8_t *ip, int valid)
-{
-    if (__builtin_expect(valid, 1))
-    {
-        syslog(LOG_INFO, "│ %-24s : %u.%u.%u.%u", label, ip[0], ip[1], ip[2], ip[3]);
-    }
-    else
-    {
-        syslog(LOG_INFO, "│ %-24s : [not present]", label);
-    }
-}
-
-static inline void print_ipv6_prefix_field(const char *label, const uint8_t *prefix, int valid)
-{
-    if (__builtin_expect(!valid, 0))
-    {
-        syslog(LOG_INFO, "│ %-24s : [not present]", label);
-        return;
-    }
-
-    char ip6[INET6_ADDRSTRLEN];
-
-    inet_ntop(AF_INET6, prefix + 2, ip6, sizeof(ip6));
-    syslog(LOG_INFO, "│ %-24s : %s/%u", label, ip6, prefix[1]);
-}
-
-static inline void print_timestamp(uint32_t epoch, int valid)
-{
-    if (__builtin_expect(!valid, 0))
-    {
-        syslog(LOG_INFO, "│ %-24s : [not present]", "Event Timestamp");
-        return;
-    }
-    struct tm tm_info;
-    time_t t = (time_t)epoch;
-    localtime_r(&t, &tm_info);
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_info);
-    syslog(LOG_INFO, "│ %-24s : %u", "Event Timestamp", epoch);
-    syslog(LOG_INFO, "│ %-24s : %s", "Event Time", buf);
-}
-
-static inline void print_port_range(const UserSessionInfo *s)
-{
-    if (__builtin_expect((s->portStart != 0 || s->portEnd != 0), 1))
-    {
-        syslog(LOG_INFO, "│ %-24s : %u - %u", "NAT Port Range", s->portStart, s->portEnd);
-    }
-    else
-    {
-        syslog(LOG_INFO, "│ %-24s : [not mapped]", "NAT Port Range");
-    }
-}
-
-static inline void print_extra_avps(const UserSessionInfo *s)
-{
-    if (__builtin_expect(!opt_extract_all, 1))
-        return;
-
-    if (__builtin_expect(s->extra_avp_count == 0, 1))
-        return;
-
-    LOG_LINE();
-    syslog(LOG_INFO, "│ EXTRA AVPs (%u)", s->extra_avp_count);
-    LOG_LINE();
-    for (uint16_t i = 0; i < s->extra_avp_count; i++)
-    {
-        const extra_avps *avp = &s->extra_avps[i];
-        const char *name = getRadiusAttributeName(avp->type);
-        syslog(LOG_INFO, "│ [%03u] %-30s Type=%-3u Len=%-3u", i + 1, name, avp->type, avp->len);
-
-        /*
-         * Print AVP value hex
-         */
-        char hexbuf[512];
-        int pos = 0;
-        const uint16_t payloadLen = avp->len - 2;
-        for (uint16_t j = 0; j < payloadLen && j < MAX_AVP_VALUE; j++)
-        {
-            pos += snprintf(hexbuf + pos, sizeof(hexbuf) - pos, "%02x ", avp->value[j]);
-            if (pos >= (int)(sizeof(hexbuf) - 4))
-                break;
-        }
-        syslog(LOG_INFO, "│ %-24s : %s", "Value", hexbuf);
     }
 }
 

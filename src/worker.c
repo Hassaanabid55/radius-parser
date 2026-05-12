@@ -220,11 +220,12 @@ void session_print_stats()
 void *worker_thread(void *arg)
 {
     int core_id = *(int *)arg;
-    if (bind_thread_to_core(core_id) != 0)
-    {
-        return NULL;
-    }
-
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "Worker thread started on core %d", core_id);
     Task task;
     struct timespec start;
     struct timespec end;
@@ -238,7 +239,6 @@ void *worker_thread(void *arg)
         {
             break;
         }
-
         clock_gettime(CLOCK_MONOTONIC, &start);
         RadiusPacket radiusPkt;
         if (__builtin_expect(parseRadiusPkt((const char *)task.data, task.packet_length, &radiusPkt) == 0, 1))

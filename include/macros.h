@@ -1,17 +1,3 @@
-#define LOG_LINE() \
-    syslog(LOG_INFO, "├──────────────────────────────────────────────────────────")
-
-#define LOG_HEADER()                                                                     \
-    do                                                                                   \
-    {                                                                                    \
-        syslog(LOG_INFO, "┌──────────────────────────────────────────────────────────"); \
-        syslog(LOG_INFO, "│ USER SESSION");                                              \
-        LOG_LINE();                                                                      \
-    } while (0)
-
-#define LOG_FOOTER() \
-    syslog(LOG_INFO, "└──────────────────────────────────────────────────────────")
-
 #define RADIUS_LENGTH_FIELD_LENGTH 2         /**< Number of bytes reserved for length field */
 #define RADIUS_IDENTIFIER_FIELD_LENGTH 1     /**< Number of bytes reserved for identifier field */
 #define RADIUS_AUTHENTICATOR_FIELD_LENGTH 16 /**< Number of bytes reserved for authenticator field */

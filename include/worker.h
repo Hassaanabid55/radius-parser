@@ -172,50 +172,6 @@ static inline bool session_ip_changed(SessionNode *node, const UserSessionInfo *
     return (memcmp(node->entry.u8FramedIpv4Address, s->u8FramedIpv4Address, IPV4_OCTETS) != 0 || memcmp(node->entry.u8FramedIpv6Prefix, s->u8FramedIpv6Prefix, IPV6_PREFIX_MAX_LEN) != 0);
 }
 
-static inline int bind_thread_to_core(int core_id)
-{
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(core_id, &cpuset);
-    int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    if (ret != 0)
-    {
-        syslog(LOG_ERR, "pthread_setaffinity_np failed for core %d: %s", core_id, strerror(ret));
-        return -1;
-    }
-    cpu_set_t verify_set;
-    CPU_ZERO(&verify_set);
-    ret = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &verify_set);
-    if (ret != 0)
-    {
-        syslog(LOG_ERR, "pthread_getaffinity_np failed: %s", strerror(ret));
-        return -1;
-    }
-
-    for (int i = 0; i < CPU_SETSIZE; i++)
-    {
-        if (i == core_id)
-        {
-            if (!CPU_ISSET(i, &verify_set))
-            {
-                syslog(LOG_ERR, "Core %d not set in affinity mask", core_id);
-                return -1;
-            }
-        }
-        else
-        {
-            if (CPU_ISSET(i, &verify_set))
-            {
-                syslog(LOG_ERR, "Thread affinity leaked to core %d", i);
-                return -1;
-            }
-        }
-    }
-    if (opt_verbosity > 0)
-        syslog(LOG_INFO, "Thread hard-bound to CPU core %d", core_id);
-    return 0;
-}
-
 void queue_init(TaskQueue *q);
 bool queue_push(TaskQueue *restrict q, const Task *restrict task);
 bool queue_pop(TaskQueue *restrict q, Task *restrict task);

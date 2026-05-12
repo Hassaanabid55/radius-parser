@@ -5,64 +5,85 @@
  * ========================================================= */
 void printUserSession(const UserSessionInfo *s)
 {
-    if (__builtin_expect(!s, 0))
+    if (!s)
         return;
 
-    LOG_HEADER();
+    char logbuf[16384];
+    size_t off = 0;
+
+    char ipv4_priv[32] = "[not present]";
+    char ipv4_pub[32] = "[not present]";
+    char ipv6[INET6_ADDRSTRLEN] = "[not present]";
+    char tsbuf[64] = "[not present]";
 
     /*
-     * Session Type
+     * IPv4 Private
      */
-    print_string_field("Session Type", session_type_str(s->nSessionIndicator), 1);
+    if (s->u64ValidAttributes & VALID_FRAMED_IPV4)
+    {
+        snprintf(ipv4_priv, sizeof(ipv4_priv), "%u.%u.%u.%u", s->u8FramedIpv4Address[0], s->u8FramedIpv4Address[1], s->u8FramedIpv4Address[2], s->u8FramedIpv4Address[3]);
+    }
 
     /*
-     * Session ID
+     * IPv4 Public
      */
-    print_string_field("Session ID", s->acAccountSessionId, s->u64ValidAttributes & VALID_ACCT_SESSION_ID);
+    if (s->portStart != 0 || s->portEnd != 0)
+    {
+        snprintf(ipv4_pub, sizeof(ipv4_pub), "%u.%u.%u.%u", s->u8FramedIpv4PubAddress[0], s->u8FramedIpv4PubAddress[1], s->u8FramedIpv4PubAddress[2], s->u8FramedIpv4PubAddress[3]);
+    }
 
     /*
-     * Multi Session ID
+     * IPv6
      */
-    print_string_field("Multi Session ID", s->acMultiSessionId, s->u64ValidAttributes & VALID_ACCT_MULTI_SESSION_ID);
-
-    /*
-     * Calling Station
-     */
-    print_string_field("Calling Station", s->acCallingStationId, s->u64ValidAttributes & VALID_CALLING_STATION_ID);
-
-    /*
-     * Private IPv4
-     */
-    print_ipv4_field("Framed IPv4 (Private)", s->u8FramedIpv4Address, s->u64ValidAttributes & VALID_FRAMED_IPV4);
-
-    /*
-     * Public IPv4
-     */
-    print_ipv4_field("Framed IPv4 (Public)", s->u8FramedIpv4PubAddress, (s->portStart != 0 || s->portEnd != 0));
-
-    /*
-     * IPv6 Prefix
-     */
-    print_ipv6_prefix_field("Framed IPv6 Prefix", s->u8FramedIpv6Prefix, s->u64ValidAttributes & VALID_FRAMED_IPV6_PREFIX);
-
-    /*
-     * NAT Port Range
-     */
-    print_port_range(s);
+    if (s->u64ValidAttributes & VALID_FRAMED_IPV6_PREFIX)
+    {
+        inet_ntop(AF_INET6, s->u8FramedIpv6Prefix + 2, ipv6, sizeof(ipv6));
+    }
 
     /*
      * Timestamp
      */
-    print_timestamp(s->u32EventTimestamp, s->u64ValidAttributes & VALID_EVENT_TIMESTAMP);
+    if (s->u64ValidAttributes & VALID_EVENT_TIMESTAMP)
+    {
+        struct tm tm_info;
+        time_t t = (time_t)s->u32EventTimestamp;
+        localtime_r(&t, &tm_info);
+        strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_info);
+    }
 
-    /*
-     * WL Status
-     */
-    print_string_field("WL Status", s->u8IsWL ? "YES" : "NO", 1);
+    off += snprintf(logbuf + off, sizeof(logbuf) - off, "[SESSION] Type=%s | SessionId=%s | MultiSessionId=%s | CallingStation=%s | IPv4Private=%s | IPv4Public=%s | IPv6=%s | Ports=%u-%u | Timestamp=%u | Time=%s | WL=%s", session_type_str(s->nSessionIndicator), (s->u64ValidAttributes & VALID_ACCT_SESSION_ID) ? s->acAccountSessionId : "[not present]", (s->u64ValidAttributes & VALID_ACCT_MULTI_SESSION_ID) ? s->acMultiSessionId : "[not present]", (s->u64ValidAttributes & VALID_CALLING_STATION_ID) ? s->acCallingStationId : "[not present]", ipv4_priv, ipv4_pub, ipv6, s->portStart, s->portEnd, s->u32EventTimestamp, tsbuf, s->u8IsWL ? "YES" : "NO");
+    if (opt_extract_all && s->extra_avp_count > 0)
+    {
+        off += snprintf(logbuf + off, sizeof(logbuf) - off, " | AVPs=[");
+        for (uint16_t i = 0; i < s->extra_avp_count; i++)
+        {
+            const extra_avps *avp = &s->extra_avps[i];
+            char hexbuf[512];
+            size_t hexoff = 0;
+            const uint16_t payloadLen = avp->len - 2;
+            for (uint16_t j = 0; j < payloadLen && j < MAX_AVP_VALUE; j++)
+            {
+                hexoff += snprintf(hexbuf + hexoff, sizeof(hexbuf) - hexoff, "%02x", avp->value[j]);
+                if (j + 1 < payloadLen)
+                {
+                    hexoff += snprintf(hexbuf + hexoff, sizeof(hexbuf) - hexoff, ":");
+                }
 
-    /*
-     * Extra AVPs
-     */
-    print_extra_avps(s);
-    LOG_FOOTER();
+                if (hexoff >= sizeof(hexbuf))
+                    break;
+            }
+
+            off += snprintf(logbuf + off, sizeof(logbuf) - off, "{Type=%u,Len=%u,Value=%s}", avp->type, avp->len, hexbuf);
+            if (i + 1 < s->extra_avp_count)
+            {
+                off += snprintf(logbuf + off, sizeof(logbuf) - off, ",");
+            }
+
+            if (off >= sizeof(logbuf))
+                break;
+        }
+        off += snprintf(logbuf + off, sizeof(logbuf) - off, "]");
+    }
+
+    syslog(LOG_INFO, "%s", logbuf);
 }
