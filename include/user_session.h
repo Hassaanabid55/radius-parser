@@ -22,8 +22,7 @@ typedef struct
 
 typedef struct
 {
-    // ================= FAST MODE FIELDS =================
-    int nSessionIndicator;
+    /* ================= FAST MODE FIELDS ================= */
     uint64_t u64ValidAttributes;
     uint32_t u32EventTimestamp;
     uint8_t u8AccountStatusType;
@@ -38,9 +37,10 @@ typedef struct
     uint16_t portEnd;
     struct tm sSessionStartTime;
     struct tm sSessionEndTime;
-    // ================= FULL MODE STORAGE =================
+    uint32_t destroy_time;
+    /* ================= OPTIONAL AVPS ================= */
     uint16_t extra_avp_count;
-    extra_avps extra_avps[MAX_EXTRA_AVPS];
+    extra_avps *extra_avps;
 } UserSessionInfo;
 
 /* =========================================================

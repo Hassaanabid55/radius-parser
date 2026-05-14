@@ -1,5 +1,36 @@
 #include "parser.h"
 
+static uint64_t g_session_count = 0;
+static uint64_t g_session_inserts = 0;
+static uint64_t g_session_deletes = 0;
+static uint64_t g_session_updates = 0;
+static uint64_t g_session_total_starts = 0;
+static uint64_t g_session_total_updates = 0;
+static uint64_t g_session_total_deletes = 0;
+static uint8_t shard = 0;
+
+SessionNode *g_session_map = NULL;
+pthread_mutex_t g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void session_print_stats()
+{
+    syslog(LOG_INFO, "================ SESSION MAP STATS ================");
+    syslog(LOG_INFO, "Active sessions   : %lu", g_session_count);
+    syslog(LOG_INFO, "Inserts           : %lu", g_session_inserts);
+    syslog(LOG_INFO, "Deletes           : %lu", g_session_deletes);
+    syslog(LOG_INFO, "Updates           : %lu", g_session_updates);
+    syslog(LOG_INFO, "Total Starts      : %lu", g_session_total_starts);
+    syslog(LOG_INFO, "Total Updates     : %lu", g_session_total_updates);
+    syslog(LOG_INFO, "Total Deletes     : %lu", g_session_total_deletes);
+
+    if (g_session_count > 0)
+    {
+        size_t approx_mem = g_session_count * sizeof(SessionNode);
+        syslog(LOG_INFO, "Approx memory     : %zu KB", approx_mem / 1024);
+    }
+    syslog(LOG_INFO, "===================================================");
+}
+
 /* =========================================================
  * ETHERNET -> IPV4
  * ========================================================= */
@@ -170,6 +201,41 @@ int parseRadiusPkt(const char *pPacket, size_t len, RadiusPacket *radiusPkt)
     return 0;
 }
 
+void *session_timeout_thread(void *arg)
+{
+    (void)arg;
+    while (g_running)
+    {
+        usleep(200000);
+        uint32_t now = (uint32_t)time(NULL);
+        pthread_mutex_lock(&g_session_mutex);
+        SessionNode *node, *tmp;
+        int idx = 0;
+        HASH_ITER(hh, g_session_map, node, tmp)
+        {
+            if ((idx++ % 10) != shard)
+                continue;
+
+            if (node->entry.destroy_time == 0)
+                continue;
+
+            if (node->entry.destroy_time > now)
+                continue;
+
+            syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
+            HASH_DEL(g_session_map, node);
+            if (g_session_count > 0)
+                g_session_count--;
+
+            g_session_deletes++;
+            free(node);
+        }
+        shard = (shard + 1) % 10;
+        pthread_mutex_unlock(&g_session_mutex);
+    }
+    return NULL;
+}
+
 /* =========================================================
  * READ RADIUS ATTRIBUTES
  * ========================================================= */
@@ -185,12 +251,39 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         return -1;
 
     memset(pSession, 0, sizeof(*pSession));
-    pSession->nSessionIndicator = -1;
     const uint8_t *payload = radiusPkt->pPayload;
     const uint32_t payloadLen = radiusPkt->payloadLen;
+    SessionNode *node = NULL;
     uint32_t offset = 0;
     while (offset + 2 <= payloadLen)
     {
+        if (node && pSession->u8AccountStatusType)
+        {
+            syslog(LOG_DEBUG, "Old node found for node session_id=%s and current session_id=%s", node->acAccountSessionId, pSession->acAccountSessionId);
+            if (pSession->u8AccountStatusType == SESSION_UPDATE)
+            {
+                pthread_mutex_lock(&g_session_mutex);
+                syslog(LOG_DEBUG, "Updating session_id=%s", node->acAccountSessionId);
+                sessionEnd(&node->entry);
+                node->entry.destroy_time = (uint32_t)time(NULL) + opt_update_timeout;
+                syslog(LOG_DEBUG, "Updated session=%s destroy_time=%u", node->acAccountSessionId, node->entry.destroy_time);
+                *pSession = node->entry;
+                pthread_mutex_unlock(&g_session_mutex);
+                g_session_updates++;
+            }
+            else if (pSession->u8AccountStatusType == SESSION_STOP)
+            {
+                syslog(LOG_DEBUG, "Stopping session_id=%s", node->acAccountSessionId);
+                sessionEnd(&node->entry);
+                *pSession = node->entry;
+                session_delete(node);
+                g_session_count--;
+                g_session_deletes++;
+            }
+            syslog(LOG_DEBUG, "======================================================");
+            return 0;
+        }
+
         const uint8_t *p = payload + offset;
         const uint8_t type = p[0];
         const uint8_t len = p[1];
@@ -218,31 +311,14 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
                 return logInvalidAvp(type, len, offset);
 
             uint32_t v;
-
             memcpy(&v, value, sizeof(v));
             pSession->u8AccountStatusType = (uint8_t)ntohl(v);
-            switch (pSession->u8AccountStatusType)
-            {
-            case SESSION_START:
-                sessionStart(pSession);
-                pSession->nSessionIndicator = SESSION_START;
-                break;
-
-            case SESSION_STOP:
-                sessionEnd(pSession);
-                pSession->nSessionIndicator = SESSION_STOP;
-                break;
-
-            case SESSION_UPDATE:
-                sessionEnd(pSession);
-                sessionStart(pSession);
-                pSession->nSessionIndicator = SESSION_UPDATE;
-                break;
-
-            default:
-                break;
-            }
-
+            if (pSession->u8AccountStatusType == SESSION_START)
+                g_session_total_starts++;
+            else if (pSession->u8AccountStatusType == SESSION_UPDATE)
+                g_session_total_updates++;
+            else if (pSession->u8AccountStatusType == SESSION_STOP)
+                g_session_total_deletes++;
             pSession->u64ValidAttributes |= VALID_ACCT_STATUS_TYPE;
 
             break;
@@ -256,6 +332,7 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             const uint8_t copyLen = (valueLen < sizeof(pSession->acAccountSessionId) - 1) ? valueLen : sizeof(pSession->acAccountSessionId) - 1;
             memcpy(pSession->acAccountSessionId, value, copyLen);
             pSession->acAccountSessionId[copyLen] = '\0';
+            node = session_find(pSession->acAccountSessionId);
             pSession->u64ValidAttributes |= VALID_ACCT_SESSION_ID;
             break;
         }
@@ -298,7 +375,6 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
                 return logInvalidAvp(type, len, offset);
 
             uint32_t ts;
-
             memcpy(&ts, value, sizeof(ts));
             pSession->u32EventTimestamp = ntohl(ts);
             pSession->u64ValidAttributes |= VALID_EVENT_TIMESTAMP;
@@ -389,5 +465,25 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         } /* switch */
         offset += len;
     } /* while */
+
+    if (pSession->u8AccountStatusType == SESSION_START || pSession->u8AccountStatusType == SESSION_UPDATE)
+    {
+        syslog(LOG_DEBUG, "Inserting new session_id=%s on status type %d", pSession->acAccountSessionId, pSession->u8AccountStatusType);
+        sessionStart(pSession);
+        pSession->destroy_time = (uint32_t)time(NULL) + opt_update_timeout;
+        int rc = session_insert(pSession);
+        if (rc == 0)
+        {
+            g_session_count++;
+            g_session_inserts++;
+        }
+        else
+        {
+            syslog(LOG_ERR, "Failed to insert session_id=%s", pSession->acAccountSessionId);
+        }
+    }
+    syslog(LOG_DEBUG, "Parsed session_id=%s status_type=%d", pSession->acAccountSessionId, pSession->u8AccountStatusType);
+    syslog(LOG_DEBUG, "======================================================");
+
     return 0;
 }

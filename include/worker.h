@@ -106,21 +106,12 @@ typedef struct
     bool shutdown;
 } TaskQueue;
 
-typedef struct SessionNode
-{
-    char acAccountSessionId[SESSION_ID_MAX_LEN];
-    UserSessionInfo entry;
-    UT_hash_handle hh;
-} SessionNode;
-
 extern char opt_threads_str[128];
 extern volatile sig_atomic_t g_running;
 extern TaskQueue global_queue __attribute__((aligned(64)));
 extern pthread_t worker_threads[MAX_THREADS];
 extern pthread_t stats_worker_threads;
-
-extern SessionNode *g_session_map;
-extern pthread_mutex_t g_session_mutex;
+extern pthread_t timeout_tid;
 extern int cores[MAX_CORE_COUNT];
 extern uint16_t core_count;
 
@@ -137,39 +128,6 @@ static inline void queue_signal_not_full(TaskQueue *q)
 static inline uint64_t timespec_diff_ns(const struct timespec *start, const struct timespec *end)
 {
     return (((uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ULL) + ((uint64_t)(end->tv_nsec - start->tv_nsec)));
-}
-
-static inline SessionNode *session_find(const char *id)
-{
-    if (__builtin_expect(!id, 0))
-        return NULL;
-
-    SessionNode *node = NULL;
-    HASH_FIND_STR(g_session_map, id, node);
-    return node;
-}
-
-static inline void session_insert(const UserSessionInfo *s)
-{
-    SessionNode *node = malloc(sizeof(SessionNode));
-    if (!node)
-        return;
-
-    memset(node, 0, sizeof(*node));
-    strncpy(node->acAccountSessionId, s->acAccountSessionId, sizeof(node->acAccountSessionId));
-    node->entry = *s;
-    HASH_ADD_STR(g_session_map, acAccountSessionId, node);
-}
-
-static inline void session_delete(SessionNode *node)
-{
-    HASH_DEL(g_session_map, node);
-    free(node);
-}
-
-static inline bool session_ip_changed(SessionNode *node, const UserSessionInfo *s)
-{
-    return (memcmp(node->entry.u8FramedIpv4Address, s->u8FramedIpv4Address, IPV4_OCTETS) != 0 || memcmp(node->entry.u8FramedIpv6Prefix, s->u8FramedIpv6Prefix, IPV6_PREFIX_MAX_LEN) != 0);
 }
 
 void queue_init(TaskQueue *q);

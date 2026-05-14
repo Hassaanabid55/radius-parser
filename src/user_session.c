@@ -51,7 +51,7 @@ void printUserSession(const UserSessionInfo *s)
         strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_info);
     }
 
-    off += snprintf(logbuf + off, sizeof(logbuf) - off, "[SESSION] Type=%s | SessionId=%s | MultiSessionId=%s | CallingStation=%s | IPv4Private=%s | IPv4Public=%s | IPv6=%s | Ports=%u-%u | Timestamp=%u | Time=%s | WL=%s", session_type_str(s->nSessionIndicator), (s->u64ValidAttributes & VALID_ACCT_SESSION_ID) ? s->acAccountSessionId : "[not present]", (s->u64ValidAttributes & VALID_ACCT_MULTI_SESSION_ID) ? s->acMultiSessionId : "[not present]", (s->u64ValidAttributes & VALID_CALLING_STATION_ID) ? s->acCallingStationId : "[not present]", ipv4_priv, ipv4_pub, ipv6, s->portStart, s->portEnd, s->u32EventTimestamp, tsbuf, s->u8IsWL ? "YES" : "NO");
+    off += snprintf(logbuf + off, sizeof(logbuf) - off, "[SESSION] Type=%s | SessionId=%s | MultiSessionId=%s | CallingStation=%s | IPv4Private=%s | IPv4Public=%s | IPv6=%s | Ports=%u-%u | Timestamp=%u | Time=%s | WL=%s", session_type_str(s->u8AccountStatusType), (s->u64ValidAttributes & VALID_ACCT_SESSION_ID) ? s->acAccountSessionId : "[not present]", (s->u64ValidAttributes & VALID_ACCT_MULTI_SESSION_ID) ? s->acMultiSessionId : "[not present]", (s->u64ValidAttributes & VALID_CALLING_STATION_ID) ? s->acCallingStationId : "[not present]", ipv4_priv, ipv4_pub, ipv6, s->portStart, s->portEnd, s->u32EventTimestamp, tsbuf, s->u8IsWL ? "YES" : "NO");
     if (opt_extract_all && s->extra_avp_count > 0)
     {
         off += snprintf(logbuf + off, sizeof(logbuf) - off, " | AVPs=[");

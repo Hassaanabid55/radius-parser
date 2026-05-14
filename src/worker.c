@@ -1,15 +1,9 @@
 #include "worker.h"
 
 TaskQueue global_queue __attribute__((aligned(64)));
-SessionNode *g_session_map = NULL;
-pthread_mutex_t g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t worker_threads[MAX_THREADS];
 pthread_t stats_worker_threads;
-static uint64_t g_session_count = 0;
-static uint64_t g_session_inserts = 0;
-static uint64_t g_session_deletes = 0;
-static uint64_t g_session_updates = 0;
-static uint64_t g_session_lookups = 0;
+pthread_t timeout_tid;
 
 void queue_init(TaskQueue *q)
 {
@@ -197,23 +191,6 @@ void wake_worker_threads(void)
     pthread_mutex_unlock(&global_queue.mutex);
 }
 
-void session_print_stats()
-{
-    syslog(LOG_INFO, "================ SESSION MAP STATS ================");
-    syslog(LOG_INFO, "Active sessions   : %lu", g_session_count);
-    syslog(LOG_INFO, "Inserts           : %lu", g_session_inserts);
-    syslog(LOG_INFO, "Deletes           : %lu", g_session_deletes);
-    syslog(LOG_INFO, "Updates           : %lu", g_session_updates);
-    syslog(LOG_INFO, "Lookups           : %lu", g_session_lookups);
-
-    if (g_session_count > 0)
-    {
-        size_t approx_mem = g_session_count * sizeof(SessionNode);
-        syslog(LOG_INFO, "Approx memory     : %zu KB", approx_mem / 1024);
-    }
-    syslog(LOG_INFO, "===================================================");
-}
-
 /* =========================
  WORKER THREAD
  ========================= */
@@ -250,56 +227,6 @@ void *worker_thread(void *arg)
                 {
                     printUserSession(&session);
                 }
-                pthread_mutex_lock(&g_session_mutex);
-                SessionNode *node = session_find(session.acAccountSessionId);
-                g_session_lookups++;
-                switch (session.u8AccountStatusType)
-                {
-                case SESSION_START:
-                {
-                    if (!node)
-                    {
-                        session_insert(&session);
-                        g_session_count++;
-                        g_session_inserts++;
-                    }
-                    break;
-                }
-
-                case SESSION_STOP:
-                {
-                    if (node)
-                    {
-                        session_delete(node);
-                        g_session_count--;
-                        g_session_deletes++;
-                    }
-                    break;
-                }
-
-                case SESSION_UPDATE:
-                {
-                    if (!node)
-                    {
-                        session_insert(&session);
-                        g_session_count++;
-                        g_session_inserts++;
-                    }
-                    else
-                    {
-                        if (session_ip_changed(node, &session))
-                        {
-                            node->entry = session;
-                            g_session_updates++;
-                        }
-                    }
-                    break;
-                }
-
-                default:
-                    break;
-                }
-                pthread_mutex_unlock(&g_session_mutex);
             }
             else
             {
@@ -347,6 +274,7 @@ void start_worker_threads(void)
     {
         pthread_create(&worker_threads[i], NULL, worker_thread, &cores[i]);
     }
+    pthread_create(&timeout_tid, NULL, session_timeout_thread, NULL);
     if (opt_verbosity > 1)
         pthread_create(&stats_worker_threads, NULL, session_stats_thread, (void *)(intptr_t)0);
 }

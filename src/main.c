@@ -33,6 +33,11 @@ typedef enum
     ARG_MYSQL_USER,
     ARG_MYSQL_PASSWORD,
     ARG_MYSQL_PORT,
+    ARG_RABBITMQ_HOST,
+    ARG_RABBITMQ_VHOST,
+    ARG_RABBITMQ_USER,
+    ARG_RABBITMQ_PASSWORD,
+    ARG_RABBITMQ_PORT,
 } ArgType;
 
 /* =========================
@@ -48,12 +53,17 @@ char opt_mysql_database[64] = "";
 char opt_mysql_user[64] = "";
 char opt_mysql_password[64] = "";
 char opt_threads_str[128] = "";
+char opt_rabbitmq_host[128] = "";
+char opt_rabbitmq_vhost[64] = "";
+char opt_rabbitmq_user[64] = "";
+char opt_rabbitmq_password[64] = "";
 
 uint8_t opt_verbosity = 0;
 uint16_t opt_caplen = 3200;
-uint16_t opt_update_timeout = 900;
 uint16_t opt_bye_timeout = 43200;
 uint16_t opt_mysql_port = 0;
+uint16_t opt_rabbitmq_port = 0;
+uint32_t opt_update_timeout = 900;
 uint32_t opt_ring_buffer_size = 1048576;
 
 bool opt_extract_all = false;
@@ -157,6 +167,21 @@ static inline ArgType get_arg_type(const char *arg)
     default:
         break;
     }
+
+    if (!strcmp(arg, "--rabbitmq-host"))
+        return ARG_RABBITMQ_HOST;
+
+    if (!strcmp(arg, "--rabbitmq-vhost"))
+        return ARG_RABBITMQ_VHOST;
+
+    if (!strcmp(arg, "--rabbitmq-user"))
+        return ARG_RABBITMQ_USER;
+
+    if (!strcmp(arg, "--rabbitmq-password"))
+        return ARG_RABBITMQ_PASSWORD;
+
+    if (!strcmp(arg, "--rabbitmq-port"))
+        return ARG_RABBITMQ_PORT;
 
     if (!strcmp(arg, "--whitelist-file"))
         return ARG_WHITELIST_FILE;
@@ -316,6 +341,23 @@ void load_config(const char *path)
 
         else if (!strcmp(key, "mysql_port"))
             opt_mysql_port = parse_u16(val);
+
+        /* ---------- RABBITMQ ---------- */
+
+        else if (!strcmp(key, "rabbitmq_host"))
+            safe_strcpy(opt_rabbitmq_host, sizeof(opt_rabbitmq_host), val);
+
+        else if (!strcmp(key, "rabbitmq_vhost"))
+            safe_strcpy(opt_rabbitmq_vhost, sizeof(opt_rabbitmq_vhost), val);
+
+        else if (!strcmp(key, "rabbitmq_user"))
+            safe_strcpy(opt_rabbitmq_user, sizeof(opt_rabbitmq_user), val);
+
+        else if (!strcmp(key, "rabbitmq_password"))
+            safe_strcpy(opt_rabbitmq_password, sizeof(opt_rabbitmq_password), val);
+
+        else if (!strcmp(key, "rabbitmq_port"))
+            opt_rabbitmq_port = parse_u16(val);
     }
 
     fclose(fp);
@@ -434,6 +476,31 @@ int main(int argc, char *argv[])
                 opt_mysql_port = parse_u16(argv[++i]);
             break;
 
+        case ARG_RABBITMQ_HOST:
+            if (i + 1 < argc)
+                safe_strcpy(opt_rabbitmq_host, sizeof(opt_rabbitmq_host), argv[++i]);
+            break;
+
+        case ARG_RABBITMQ_VHOST:
+            if (i + 1 < argc)
+                safe_strcpy(opt_rabbitmq_vhost, sizeof(opt_rabbitmq_vhost), argv[++i]);
+            break;
+
+        case ARG_RABBITMQ_USER:
+            if (i + 1 < argc)
+                safe_strcpy(opt_rabbitmq_user, sizeof(opt_rabbitmq_user), argv[++i]);
+            break;
+
+        case ARG_RABBITMQ_PASSWORD:
+            if (i + 1 < argc)
+                safe_strcpy(opt_rabbitmq_password, sizeof(opt_rabbitmq_password), argv[++i]);
+            break;
+
+        case ARG_RABBITMQ_PORT:
+            if (i + 1 < argc)
+                opt_rabbitmq_port = parse_u16(argv[++i]);
+            break;
+
         default:
             break;
         }
@@ -529,6 +596,7 @@ int main(int argc, char *argv[])
     {
         pthread_join(worker_threads[i], NULL);
     }
+    pthread_join(timeout_tid, NULL);
     if (opt_verbosity > 1)
         pthread_join(stats_worker_threads, NULL);
 
