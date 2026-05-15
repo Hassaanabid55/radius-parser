@@ -40,7 +40,7 @@ typedef struct
     uint32_t destroy_time;
     /* ================= OPTIONAL AVPS ================= */
     uint16_t extra_avp_count;
-    extra_avps *extra_avps;
+    extra_avps extra_avps[MAX_EXTRA_AVPS];
 } UserSessionInfo;
 
 /* =========================================================

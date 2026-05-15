@@ -15,6 +15,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/time.h>
+#include <stdatomic.h>
 
 #include "parser.h"
 
@@ -114,6 +115,7 @@ extern pthread_t stats_worker_threads;
 extern pthread_t timeout_tid;
 extern int cores[MAX_CORE_COUNT];
 extern uint16_t core_count;
+extern atomic_uint_fast64_t g_inflight_tasks;
 
 static inline void queue_signal_not_empty(TaskQueue *q)
 {

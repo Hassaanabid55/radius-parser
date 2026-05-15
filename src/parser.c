@@ -222,7 +222,8 @@ void *session_timeout_thread(void *arg)
             if (node->entry.destroy_time > now)
                 continue;
 
-            syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
+            if (opt_verbosity > 2)
+                syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
             HASH_DEL(g_session_map, node);
             if (g_session_count > 0)
                 g_session_count--;
@@ -259,28 +260,29 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
     {
         if (node && pSession->u8AccountStatusType)
         {
-            syslog(LOG_DEBUG, "Old node found for node session_id=%s and current session_id=%s", node->acAccountSessionId, pSession->acAccountSessionId);
+            if (opt_verbosity > 2)
+                syslog(LOG_DEBUG, "Old node found for node session_id=%s and current session_id=%s", node->acAccountSessionId, pSession->acAccountSessionId);
             if (pSession->u8AccountStatusType == SESSION_UPDATE)
             {
                 pthread_mutex_lock(&g_session_mutex);
-                syslog(LOG_DEBUG, "Updating session_id=%s", node->acAccountSessionId);
                 sessionEnd(&node->entry);
                 node->entry.destroy_time = (uint32_t)time(NULL) + opt_update_timeout;
-                syslog(LOG_DEBUG, "Updated session=%s destroy_time=%u", node->acAccountSessionId, node->entry.destroy_time);
+                if (opt_verbosity > 2)
+                    syslog(LOG_DEBUG, "Updated session=%s destroy_time=%u", node->acAccountSessionId, node->entry.destroy_time);
                 *pSession = node->entry;
                 pthread_mutex_unlock(&g_session_mutex);
                 g_session_updates++;
             }
             else if (pSession->u8AccountStatusType == SESSION_STOP)
             {
-                syslog(LOG_DEBUG, "Stopping session_id=%s", node->acAccountSessionId);
+                if (opt_verbosity > 2)
+                    syslog(LOG_DEBUG, "Stopping session_id=%s", node->acAccountSessionId);
                 sessionEnd(&node->entry);
                 *pSession = node->entry;
                 session_delete(node);
                 g_session_count--;
                 g_session_deletes++;
             }
-            syslog(LOG_DEBUG, "======================================================");
             return 0;
         }
 
@@ -468,7 +470,8 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
 
     if (pSession->u8AccountStatusType == SESSION_START || pSession->u8AccountStatusType == SESSION_UPDATE)
     {
-        syslog(LOG_DEBUG, "Inserting new session_id=%s on status type %d", pSession->acAccountSessionId, pSession->u8AccountStatusType);
+        if (opt_verbosity > 2)
+            syslog(LOG_DEBUG, "Inserting new session_id=%s on status type %d", pSession->acAccountSessionId, pSession->u8AccountStatusType);
         sessionStart(pSession);
         pSession->destroy_time = (uint32_t)time(NULL) + opt_update_timeout;
         int rc = session_insert(pSession);
@@ -482,8 +485,5 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
             syslog(LOG_ERR, "Failed to insert session_id=%s", pSession->acAccountSessionId);
         }
     }
-    syslog(LOG_DEBUG, "Parsed session_id=%s status_type=%d", pSession->acAccountSessionId, pSession->u8AccountStatusType);
-    syslog(LOG_DEBUG, "======================================================");
-
     return 0;
 }

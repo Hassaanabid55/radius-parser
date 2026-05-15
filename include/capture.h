@@ -51,3 +51,5 @@ bool build_radius_task(Task *restrict task, const struct pcap_pkthdr *restrict h
 void packet_handler(unsigned char *user, const struct pcap_pkthdr *header, const unsigned char *packet);
 void start_interface_capture(void);
 void stop_interface_capture(void);
+void print_session_map(void);
+void start_file_capture(const char *file_path);

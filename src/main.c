@@ -88,6 +88,25 @@ static inline void safe_strcpy(char *dst, size_t dst_size, const char *src)
 }
 
 /* =========================
+ CLEANUP FUNCTION
+ ========================= */
+void cleanup(void)
+{
+    pthread_mutex_lock(&global_queue.mutex);
+    global_queue.shutdown = true;
+    pthread_cond_broadcast(&global_queue.not_empty);
+    pthread_cond_broadcast(&global_queue.not_full);
+    pthread_mutex_unlock(&global_queue.mutex);
+    if (g_pcap_handle)
+    {
+        if (!opt_input_files[0])
+            pcap_breakloop(g_pcap_handle);
+        g_pcap_handle = NULL;
+    }
+    g_running = 0;
+}
+
+/* =========================
  SIGNAL HANDLER
  ========================= */
 void signal_handler(int sig)
@@ -97,16 +116,7 @@ void signal_handler(int sig)
 
     if (opt_verbosity > 0)
         syslog(LOG_INFO, "Shutdown signal received");
-    g_running = 0;
-    pthread_mutex_lock(&global_queue.mutex);
-    global_queue.shutdown = true;
-    pthread_cond_broadcast(&global_queue.not_empty);
-    pthread_cond_broadcast(&global_queue.not_full);
-    pthread_mutex_unlock(&global_queue.mutex);
-    if (g_pcap_handle)
-    {
-        pcap_breakloop(g_pcap_handle);
-    }
+    cleanup();
 }
 
 /* =========================
@@ -574,7 +584,8 @@ int main(int argc, char *argv[])
         if (opt_verbosity > 0)
             syslog(LOG_INFO, "Processing input file: %s", opt_input_files);
 
-        /* start_file_processing(); */
+        start_file_capture(opt_input_files);
+        cleanup();
     }
     else
     {

@@ -259,3 +259,88 @@ void stop_interface_capture(void)
         pcap_close(handle);
     }
 }
+
+void print_session_map(void)
+{
+    SessionNode *s, *tmp;
+    size_t count = 0;
+
+    syslog(LOG_INFO, "========== SESSION MAP DUMP ==========");
+
+    HASH_ITER(hh, g_session_map, s, tmp)
+    {
+        syslog(LOG_INFO,
+               "SessionID: %s",
+               s->acAccountSessionId);
+
+        count++;
+    }
+
+    syslog(LOG_INFO, "Total sessions: %zu", count);
+    syslog(LOG_INFO, "======================================");
+}
+
+/* =========================
+ PCAP FILE CAPTURE
+ ========================= */
+void start_file_capture(const char *file_path)
+{
+    char errbuf[PCAP_ERRBUF_SIZE];
+
+    if (__builtin_expect(opt_verbosity > 0, 0))
+        syslog(LOG_INFO, "Opening pcap file: %s", file_path);
+
+    pcap_t *handle = pcap_open_offline(file_path, errbuf);
+    if (__builtin_expect(handle == NULL, 0))
+    {
+        syslog(LOG_ERR, "pcap_open_offline failed: %s", errbuf);
+        return;
+    }
+
+    g_pcap_handle = handle;
+
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "Processing pcap file: %s", file_path);
+
+    struct pcap_pkthdr *header;
+    const unsigned char *packet;
+    int ret;
+    uint64_t pkt_num = 0;
+    while (__builtin_expect(g_running, 1))
+    {
+        ret = pcap_next_ex(handle, &header, &packet);
+        if (__builtin_expect(ret == 1, 1))
+        {
+            pkt_num++;
+            packet_handler(NULL, header, packet);
+        }
+        else if (ret == 0)
+        {
+            continue; // timeout (rare in offline, safe ignore)
+        }
+        else if (ret == -1)
+        {
+            syslog(LOG_ERR, "pcap_next_ex error at packet #%lu: %s", pkt_num, pcap_geterr(handle));
+            continue;
+        }
+        else if (ret == -2)
+        {
+            syslog(LOG_INFO, "End of pcap file reached");
+            break;
+        }
+    }
+    pcap_close(handle);
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "PCAP finished. Waiting for task queue to drain...");
+
+    while (__builtin_expect(atomic_load(&g_inflight_tasks) > 0, 1))
+    {
+        usleep(1000); // avoid busy spin
+    }
+    
+    if (opt_verbosity > 2)
+        print_session_map();
+
+    if (opt_verbosity > 0)
+        syslog(LOG_INFO, "Task queue drained. File capture completed");
+}

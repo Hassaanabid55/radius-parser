@@ -4,6 +4,7 @@ TaskQueue global_queue __attribute__((aligned(64)));
 pthread_t worker_threads[MAX_THREADS];
 pthread_t stats_worker_threads;
 pthread_t timeout_tid;
+atomic_uint_fast64_t g_inflight_tasks = 0;
 
 void queue_init(TaskQueue *q)
 {
@@ -240,6 +241,7 @@ void *worker_thread(void *arg)
         clock_gettime(CLOCK_MONOTONIC, &end);
         total_processing_ns += timespec_diff_ns(&start, &end);
         total_packets++;
+        atomic_fetch_sub(&g_inflight_tasks, 1);
         free(task.data);
     }
     const double total_ms = (double)total_processing_ns / 1000000.0;
@@ -284,8 +286,10 @@ void start_worker_threads(void)
  ========================= */
 void submit_task(Task *task)
 {
+    atomic_fetch_add(&g_inflight_tasks, 1);
     if (__builtin_expect(!queue_push(&global_queue, task), 0))
     {
+        atomic_fetch_sub(&g_inflight_tasks, 1);
         free(task->data);
         task->data = NULL;
     }
