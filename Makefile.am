@@ -7,10 +7,11 @@ radius_parser_SOURCES = \
     src/worker.c \
     src/user_session.c \
     src/modules/mysql/db.c \
+    src/modules/rabbitmq/rabbitmq_producer.c \
     src/modules/cgnat/cgnat_handler.c \
     src/modules/cgnat/whitelist_handler.c
 
 radius_parser_CPPFLAGS = -I$(top_srcdir)/include \
                          -I$(top_srcdir)/src/modules
 
-radius_parser_LDADD = -lpcap -lpthread -lmysqlclient
+radius_parser_LDADD = -lpcap -lpthread -lmysqlclient -lrabbitmq

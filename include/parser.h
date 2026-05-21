@@ -19,6 +19,7 @@
 #include "uthash.h"
 #include "modules/cgnat/whitelist_handler.h"
 #include "modules/cgnat/cgnat_handler.h"
+#include "modules/rabbitmq/rabbitmq_producer.h"
 
 typedef struct
 {

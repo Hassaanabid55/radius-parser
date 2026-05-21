@@ -73,6 +73,7 @@ bool opt_extract_all = false;
  ========================= */
 volatile sig_atomic_t g_running = 1;
 int cores[MAX_CORE_COUNT];
+RabbitMQClient g_rabbitmq;
 uint16_t core_count;
 
 /* =========================
@@ -612,6 +613,7 @@ int main(int argc, char *argv[])
         pthread_join(stats_worker_threads, NULL);
 
     db_close();
+    rabbitmq_cleanup(&g_rabbitmq);
     cleanup_queue(&global_queue);
     closelog();
     return EXIT_SUCCESS;

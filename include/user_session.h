@@ -64,4 +64,38 @@ static inline const char *session_type_str(uint8_t type)
     }
 }
 
+#include <stdio.h>
+
+static int session_to_json(const UserSessionInfo *s, char *buf, size_t max)
+{
+    return snprintf(buf, max,
+        "{"
+        "\"ts\":%u,"
+        "\"status\":%u,"
+        "\"session_id\":\"%s\","
+        "\"multi_session_id\":\"%s\","
+        "\"ipv4\":\"%u.%u.%u.%u\","
+        "\"calling_station\":\"%s\","
+        "\"wl\":%u,"
+        "\"port_start\":%u,"
+        "\"port_end\":%u"
+        "}",
+
+        s->u32EventTimestamp,
+        s->u8AccountStatusType,
+        s->acAccountSessionId,
+        s->acMultiSessionId,
+
+        s->u8FramedIpv4Address[0],
+        s->u8FramedIpv4Address[1],
+        s->u8FramedIpv4Address[2],
+        s->u8FramedIpv4Address[3],
+
+        s->acCallingStationId,
+        s->u8IsWL,
+        s->portStart,
+        s->portEnd
+    );
+}
+
 void printUserSession(const UserSessionInfo *pSession);

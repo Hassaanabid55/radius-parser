@@ -31,6 +31,39 @@ void session_print_stats()
     syslog(LOG_INFO, "===================================================");
 }
 
+int rabbitmq_send_start(RabbitMQClient *client, const UserSessionInfo *session)
+{
+    char json[2048];
+
+    int len = session_to_json(session, json, sizeof(json));
+    if (len <= 0 || len >= (int)sizeof(json))
+        return 0;
+
+    return rabbitmq_publish_start(client, json, (size_t)len);
+}
+
+int rabbitmq_send_update(RabbitMQClient *client, const UserSessionInfo *session)
+{
+    char json[2048];
+
+    int len = session_to_json(session, json, sizeof(json));
+    if (len <= 0 || len >= (int)sizeof(json))
+        return 0;
+
+    return rabbitmq_publish_update(client, json, (size_t)len);
+}
+
+int rabbitmq_send_stop(RabbitMQClient *client, const UserSessionInfo *session)
+{
+    char json[2048];
+
+    int len = session_to_json(session, json, sizeof(json));
+    if (len <= 0 || len >= (int)sizeof(json))
+        return 0;
+
+    return rabbitmq_publish_stop(client, json, (size_t)len);
+}
+
 /* =========================================================
  * ETHERNET -> IPV4
  * ========================================================= */

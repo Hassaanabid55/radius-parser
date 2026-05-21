@@ -1,45 +1,22 @@
-#pragma once
-
-#include <stdint.h>
-#include <stdbool.h>
-#include <pthread.h>
 #include <amqp.h>
 #include <amqp_tcp_socket.h>
 
-#include "user_session.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "macros.h"
 
 typedef struct
 {
-    char host[128];
-    uint16_t port;
-    char username[128];
-    char password[128];
-    char vhost[128];
-
-    amqp_connection_state_t connection;
+    amqp_connection_state_t conn;
     amqp_socket_t *socket;
+    int channel;
 
-    bool connected;
-    pthread_mutex_t publish_mutex;
+} RabbitMQClient;
 
-} RabbitMQProducer;
-
-extern RabbitMQProducer g_rabbitmq;
-
-bool rabbitmq_init(
-    const char *host,
-    uint16_t port,
-    const char *username,
-    const char *password,
-    const char *vhost);
-
-void rabbitmq_disconnect();
-
-bool rabbitmq_publish(
-    const char *queue_name,
-    const char *message);
-
-bool rabbitmq_publish_session(
-    const UserSessionInfo *session);
-
-bool rabbitmq_reconnect();
+int rabbitmq_init(RabbitMQClient *client);
+void rabbitmq_cleanup(RabbitMQClient *client);
+int rabbitmq_publish_start(RabbitMQClient *client, const char *data, size_t len);
+int rabbitmq_publish_update(RabbitMQClient *client, const char *data, size_t len);
+int rabbitmq_publish_stop(RabbitMQClient *client, const char *data, size_t len);

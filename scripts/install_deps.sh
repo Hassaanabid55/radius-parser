@@ -14,4 +14,5 @@ apt install -y \
     pkg-config \
     libpcap-dev \
     libmysqlclient-dev \
+    librabbitmq-dev \
     uthash-dev 

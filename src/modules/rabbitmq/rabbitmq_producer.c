@@ -1,267 +1,172 @@
-#include "rabbitmq_producer.h"
+#include "modules/rabbitmq/rabbitmq_producer.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <syslog.h>
+extern char opt_rabbitmq_host[128];
+extern char opt_rabbitmq_vhost[64];
+extern char opt_rabbitmq_user[64];
+extern char opt_rabbitmq_password[64];
+extern uint16_t opt_rabbitmq_port;
 
-RabbitMQProducer g_rabbitmq;
-
-static bool rabbitmq_check_reply(amqp_rpc_reply_t reply)
+static int declare_topology(RabbitMQClient *client)
 {
-    switch (reply.reply_type)
-    {
-    case AMQP_RESPONSE_NORMAL:
-        return true;
-
-    case AMQP_RESPONSE_NONE:
-        syslog(LOG_ERR, "RabbitMQ: missing RPC reply");
-        return false;
-
-    case AMQP_RESPONSE_LIBRARY_EXCEPTION:
-        syslog(LOG_ERR,
-               "RabbitMQ library error: %s",
-               amqp_error_string2(reply.library_error));
-        return false;
-
-    case AMQP_RESPONSE_SERVER_EXCEPTION:
-        syslog(LOG_ERR,
-               "RabbitMQ server exception");
-        return false;
-    }
-
-    return false;
+    amqp_exchange_declare(client->conn, client->channel, amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes("direct"), 0, 1, 0, 0, amqp_empty_table);
+    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(START_QUEUE), 0, 1, 0, 0, amqp_empty_table);
+    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(UPDATE_QUEUE), 0, 1, 0, 0, amqp_empty_table);
+    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(STOP_QUEUE), 0, 1, 0, 0, amqp_empty_table);
+    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(START_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(START_ROUTING_KEY), amqp_empty_table);
+    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(UPDATE_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(UPDATE_ROUTING_KEY), amqp_empty_table);
+    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(STOP_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(STOP_ROUTING_KEY), amqp_empty_table);
+    return 1;
 }
 
-bool rabbitmq_init(
-    const char *host,
-    uint16_t port,
-    const char *username,
-    const char *password,
-    const char *vhost)
+int rabbitmq_init(RabbitMQClient *client)
 {
-    memset(&g_rabbitmq, 0, sizeof(g_rabbitmq));
-
-    strncpy(g_rabbitmq.host, host, sizeof(g_rabbitmq.host) - 1);
-    strncpy(g_rabbitmq.username, username, sizeof(g_rabbitmq.username) - 1);
-    strncpy(g_rabbitmq.password, password, sizeof(g_rabbitmq.password) - 1);
-    strncpy(g_rabbitmq.vhost, vhost, sizeof(g_rabbitmq.vhost) - 1);
-
-    g_rabbitmq.port = port;
-
-    pthread_mutex_init(&g_rabbitmq.publish_mutex, NULL);
-
-    g_rabbitmq.connection = amqp_new_connection();
-
-    g_rabbitmq.socket = amqp_tcp_socket_new(g_rabbitmq.connection);
-    if (!g_rabbitmq.socket)
+    memset(client, 0, sizeof(*client));
+    client->channel = 1;
+    client->conn = amqp_new_connection();
+    client->socket = amqp_tcp_socket_new(client->conn);
+    if (!client->socket)
     {
-        syslog(LOG_ERR, "RabbitMQ socket creation failed");
-        return false;
+        fprintf(stderr, "RabbitMQ socket creation failed\n");
+        return 0;
     }
 
-    if (amqp_socket_open(g_rabbitmq.socket,
-                         host,
-                         port))
+    if (amqp_socket_open(client->socket, opt_rabbitmq_host, opt_rabbitmq_port))
     {
-        syslog(LOG_ERR,
-               "RabbitMQ socket open failed");
-        return false;
+        fprintf(stderr, "RabbitMQ socket open failed\n");
+        return 0;
     }
 
-    if (!rabbitmq_check_reply(
-            amqp_login(g_rabbitmq.connection,
-                       vhost,
-                       0,
-                       131072,
-                       0,
-                       AMQP_SASL_METHOD_PLAIN,
-                       username,
-                       password)))
+    amqp_rpc_reply_t reply;
+    reply = amqp_login(client->conn, opt_rabbitmq_vhost, 0, 131072, 60, AMQP_SASL_METHOD_PLAIN, opt_rabbitmq_user, opt_rabbitmq_password);
+    if (reply.reply_type != AMQP_RESPONSE_NORMAL)
     {
-        return false;
+        fprintf(stderr, "RabbitMQ login failed\n");
+        return 0;
     }
 
-    amqp_channel_open(g_rabbitmq.connection, 1);
-
-    if (!rabbitmq_check_reply(
-            amqp_get_rpc_reply(g_rabbitmq.connection)))
+    amqp_channel_open(client->conn, client->channel);
+    reply = amqp_get_rpc_reply(client->conn);
+    if (reply.reply_type != AMQP_RESPONSE_NORMAL)
     {
-        return false;
+        fprintf(stderr, "RabbitMQ channel open failed\n");
+        return 0;
     }
 
-    const char *queues[] = {
-        "radius.session.start",
-        "radius.session.update",
-        "radius.session.stop",
-        "radius.sync.sessions",
-        "radius.sync.wl",
-        "radius.sync.cgnat"};
-
-    for (size_t i = 0;
-         i < sizeof(queues) / sizeof(queues[0]);
-         i++)
-    {
-        amqp_queue_declare(
-            g_rabbitmq.connection,
-            1,
-            amqp_cstring_bytes(queues[i]),
-            0,
-            1,
-            0,
-            0,
-            amqp_empty_table);
-
-        if (!rabbitmq_check_reply(
-                amqp_get_rpc_reply(g_rabbitmq.connection)))
-        {
-            return false;
-        }
-    }
-
-    g_rabbitmq.connected = true;
-
-    syslog(LOG_INFO,
-           "RabbitMQ connected successfully");
-
-    return true;
+    return declare_topology(client);
 }
 
-void rabbitmq_disconnect()
+void rabbitmq_cleanup(RabbitMQClient *client)
 {
-    pthread_mutex_lock(&g_rabbitmq.publish_mutex);
+    if (!client)
+        return;
 
-    if (g_rabbitmq.connected)
-    {
-        amqp_channel_close(
-            g_rabbitmq.connection,
-            1,
-            AMQP_REPLY_SUCCESS);
-
-        amqp_connection_close(
-            g_rabbitmq.connection,
-            AMQP_REPLY_SUCCESS);
-
-        amqp_destroy_connection(g_rabbitmq.connection);
-
-        g_rabbitmq.connected = false;
-    }
-
-    pthread_mutex_unlock(&g_rabbitmq.publish_mutex);
-
-    pthread_mutex_destroy(&g_rabbitmq.publish_mutex);
+    amqp_channel_close(client->conn, client->channel, AMQP_REPLY_SUCCESS);
+    amqp_connection_close(client->conn, AMQP_REPLY_SUCCESS);
+    amqp_destroy_connection(client->conn);
 }
 
-bool rabbitmq_reconnect()
+static int rabbitmq_publish(RabbitMQClient *client, const char *routing_key, const char *data, size_t len)
 {
-    rabbitmq_disconnect();
-
-    return rabbitmq_init(
-        g_rabbitmq.host,
-        g_rabbitmq.port,
-        g_rabbitmq.username,
-        g_rabbitmq.password,
-        g_rabbitmq.vhost);
-}
-
-bool rabbitmq_publish(
-    const char *queue_name,
-    const char *message)
-{
-    if (!queue_name || !message)
-        return false;
-
-    pthread_mutex_lock(&g_rabbitmq.publish_mutex);
-
-    if (!g_rabbitmq.connected)
-    {
-        pthread_mutex_unlock(&g_rabbitmq.publish_mutex);
-        return false;
-    }
-
     amqp_bytes_t body;
-    body.len = strlen(message);
-    body.bytes = (void *)message;
-
-    int ret = amqp_basic_publish(
-        g_rabbitmq.connection,
-        1,
-        amqp_empty_bytes,
-        amqp_cstring_bytes(queue_name),
-        0,
-        0,
-        &(amqp_basic_properties_t){
-            ._flags = AMQP_BASIC_CONTENT_TYPE_FLAG |
-                      AMQP_BASIC_DELIVERY_MODE_FLAG,
-            .content_type = amqp_cstring_bytes("application/json"),
-            .delivery_mode = 2},
-        body);
-
-    pthread_mutex_unlock(&g_rabbitmq.publish_mutex);
-
-    if (ret < 0)
-    {
-        syslog(LOG_ERR,
-               "RabbitMQ publish failed: %s",
-               amqp_error_string2(ret));
-
-        rabbitmq_reconnect();
-        return false;
-    }
-
-    return true;
+    body.len = len;
+    body.bytes = (void *)data;
+    int ret = amqp_basic_publish(client->conn, client->channel, amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(routing_key), 0, 0, NULL, body);
+    return (ret == 0);
 }
 
-bool rabbitmq_publish_session(
-    const UserSessionInfo *session)
+int rabbitmq_publish_start(RabbitMQClient *client, const char *data, size_t len)
 {
-    if (!session)
-        return false;
+    return rabbitmq_publish(client, START_ROUTING_KEY, data, len);
+}
 
-    char json[4096];
+int rabbitmq_publish_update(RabbitMQClient *client, const char *data, size_t len)
+{
+    return rabbitmq_publish(client, UPDATE_ROUTING_KEY, data, len);
+}
 
-    snprintf(
-        json,
-        sizeof(json),
+int rabbitmq_publish_stop(RabbitMQClient *client, const char *data, size_t len)
+{
+    return rabbitmq_publish(client, STOP_ROUTING_KEY, data, len);
+}
+
+int rabbitmq_publish_cgnat(RabbitMQClient *client, const CgnatEntry *e)
+{
+    char buf[512];
+
+    int len = snprintf(buf, sizeof(buf),
         "{"
-        "\"session_id\":\"%s\","
-        "\"multi_session_id\":\"%s\","
-        "\"calling_station_id\":\"%s\","
-        "\"status\":%u,"
-        "\"event_timestamp\":%u,"
-        "\"ipv4\":\"%u.%u.%u.%u\","
-        "\"wl\":%u"
+        "\"type\":\"cgnat\","
+        "\"inside_ip\":\"%s\","
+        "\"nat_ip\":\"%s\","
+        "\"start_port\":%u,"
+        "\"end_port\":%u"
         "}",
-        session->acAccountSessionId,
-        session->acMultiSessionId,
-        session->acCallingStationId,
-        session->u8AccountStatusType,
-        session->u32EventTimestamp,
-        session->u8FramedIpv4Address[0],
-        session->u8FramedIpv4Address[1],
-        session->u8FramedIpv4Address[2],
-        session->u8FramedIpv4Address[3],
-        session->u8IsWL);
+        e->inside_ip,
+        e->nat_ip,
+        e->start_port,
+        e->end_port
+    );
 
-    const char *queue_name = NULL;
+    return rabbitmq_publish(client, CGNAT_QUEUE, buf, len);
+}
 
-    switch (session->u8AccountStatusType)
-    {
-    case SESSION_START:
-        queue_name = "radius.session.start";
-        break;
+int rabbitmq_publish_whitelist(RabbitMQClient *client, const WhitelistInfo *w)
+{
+    char buf[256];
 
-    case SESSION_UPDATE:
-        queue_name = "radius.session.update";
-        break;
+    int len = snprintf(buf, sizeof(buf),
+        "{"
+        "\"type\":\"whitelist\","
+        "\"msisdn\":\"%s\","
+        "\"status\":%d"
+        "}",
+        w->msisdn,
+        w->status
+    );
 
-    case SESSION_STOP:
-        queue_name = "radius.session.stop";
-        break;
+    return rabbitmq_publish(client, WHITELIST_QUEUE, buf, len);
+}
 
-    default:
-        return false;
-    }
+int rabbitmq_publish_session(RabbitMQClient *client, const UserSessionInfo *s)
+{
+    char buf[2048];
 
-    return rabbitmq_publish(queue_name, json);
+    int len = session_to_json(s, buf, sizeof(buf));
+
+    return rabbitmq_publish(client, SESSION_QUEUE, buf, len);
+}
+
+void restore_state_from_queue(amqp_connection_state_t conn, const char *queue);
+
+void restore_cgnat(CgnatNode **map, const CgnatEntry *e)
+{
+    CgnatNode *node = malloc(sizeof(CgnatNode));
+    memset(node, 0, sizeof(*node));
+
+    strcpy(node->inside_ip, e->inside_ip);
+    node->entry = *e;
+
+    HASH_ADD_STR(*map, inside_ip, node);
+}
+
+void restore_whitelist(WlNode **map, const WhitelistInfo *w)
+{
+    WlNode *node = malloc(sizeof(WlNode));
+    memset(node, 0, sizeof(*node));
+
+    strcpy(node->msisdn, w->msisdn);
+    node->info = *w;
+
+    HASH_ADD_STR(*map, msisdn, node);
+}
+
+void restore_session(SessionNode **map, const UserSessionInfo *s)
+{
+    SessionNode *node = malloc(sizeof(SessionNode));
+    memset(node, 0, sizeof(*node));
+
+    strcpy(node->acAccountSessionId, s->acAccountSessionId);
+    node->entry = *s;
+
+    HASH_ADD_STR(*map, acAccountSessionId, node);
 }
