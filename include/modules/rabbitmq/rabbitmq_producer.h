@@ -72,7 +72,6 @@ void rabbitmq_cleanup(RabbitMQClient *client);
  * 1. SESSION EVENT STREAM (START / UPDATE / STOP)
  * ========================================================= */
 int rabbitmq_publish_session_start(RabbitMQClient *c, const UserSessionInfo *s);
-int rabbitmq_publish_session_update(RabbitMQClient *c, const UserSessionInfo *s);
 int rabbitmq_publish_session_stop(RabbitMQClient *c, const UserSessionInfo *s);
 
 /* =========================================================
