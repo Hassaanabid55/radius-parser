@@ -1,3 +1,4 @@
+#include "parser.h"
 #include "modules/rabbitmq/rabbitmq_producer.h"
 
 extern char opt_rabbitmq_host[128];
@@ -8,13 +9,6 @@ extern uint16_t opt_rabbitmq_port;
 
 static int declare_topology(RabbitMQClient *client)
 {
-    amqp_exchange_declare(client->conn, client->channel, amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes("direct"), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(START_QUEUE), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(UPDATE_QUEUE), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_declare(client->conn, client->channel, amqp_cstring_bytes(STOP_QUEUE), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(START_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(START_ROUTING_KEY), amqp_empty_table);
-    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(UPDATE_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(UPDATE_ROUTING_KEY), amqp_empty_table);
-    amqp_queue_bind(client->conn, client->channel, amqp_cstring_bytes(STOP_QUEUE), amqp_cstring_bytes(RABBITMQ_EXCHANGE), amqp_cstring_bytes(STOP_ROUTING_KEY), amqp_empty_table);
     return 1;
 }
 
@@ -38,6 +32,8 @@ int rabbitmq_init(RabbitMQClient *client)
 
     amqp_rpc_reply_t reply;
     reply = amqp_login(client->conn, opt_rabbitmq_vhost, 0, 131072, 60, AMQP_SASL_METHOD_PLAIN, opt_rabbitmq_user, opt_rabbitmq_password);
+    fprintf(stderr, "Login done\n");
+    fprintf(stderr, "Opening channel...\n");
     if (reply.reply_type != AMQP_RESPONSE_NORMAL)
     {
         fprintf(stderr, "RabbitMQ login failed\n");
@@ -52,6 +48,7 @@ int rabbitmq_init(RabbitMQClient *client)
         return 0;
     }
 
+    fprintf(stderr, "Channel opened\n");
     return declare_topology(client);
 }
 

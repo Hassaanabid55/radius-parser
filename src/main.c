@@ -74,6 +74,7 @@ bool opt_extract_all = false;
 volatile sig_atomic_t g_running = 1;
 int cores[MAX_CORE_COUNT];
 RabbitMQClient g_rabbitmq;
+pthread_mutex_t g_rabbitmq_mutex = PTHREAD_MUTEX_INITIALIZER;
 uint16_t core_count;
 
 /* =========================
@@ -529,6 +530,7 @@ int main(int argc, char *argv[])
     dbcfg.port = opt_mysql_port;
     db_init(&dbcfg);
 
+
     /* =========================
      DATA LOADING
      ========================= */
@@ -572,6 +574,19 @@ int main(int argc, char *argv[])
         }
     }
 
+
+    /* =========================
+    RABBITMQ INIT
+    ========================= */
+    if (opt_rabbitmq_host[0]) {
+        if (!rabbitmq_init(&g_rabbitmq)) {
+            syslog(LOG_ERR, "RabbitMQ init failed");
+            return EXIT_FAILURE;
+        }
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "RabbitMQ connected");
+    }
+    
     /* =========================
      START WORKERS
      ========================= */

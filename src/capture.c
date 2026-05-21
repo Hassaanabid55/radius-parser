@@ -79,6 +79,7 @@ bool build_radius_task(Task *restrict task, const struct pcap_pkthdr *restrict h
     /*
      * Validate RADIUS ports
      */
+    fprintf(stderr, "ports: src=%u dst=%u\n", src_port, dst_port);
     if (__builtin_expect(!is_radius_port(src_port, dst_port, &task->packet_type), 1))
     {
         return false;

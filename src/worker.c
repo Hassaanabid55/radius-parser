@@ -1,7 +1,10 @@
 #include "worker.h"
+extern RabbitMQClient g_rabbitmq;
+extern pthread_mutex_t g_rabbitmq_mutex;
 
 TaskQueue global_queue __attribute__((aligned(64)));
 pthread_t worker_threads[MAX_THREADS];
+RabbitMQClient clients[MAX_THREADS];
 pthread_t stats_worker_threads;
 pthread_t timeout_tid;
 atomic_uint_fast64_t g_inflight_tasks = 0;
@@ -197,11 +200,13 @@ void wake_worker_threads(void)
  ========================= */
 void *worker_thread(void *arg)
 {
-    int core_id = *(int *)arg;
+    int worker_idx = *(int *)arg;
+    int core_id = cores[worker_idx];
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core_id, &cpuset);
     pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    /* use global rabbitmq connection */
     if (opt_verbosity > 0)
         syslog(LOG_INFO, "Worker thread started on core %d", core_id);
     Task task;
@@ -228,6 +233,28 @@ void *worker_thread(void *arg)
                 {
                     printUserSession(&session);
                 }
+
+                char json[2048];
+                int jlen = session_to_json(&session, json, sizeof(json));
+                if (jlen > 0)
+                {
+                    pthread_mutex_lock(&g_rabbitmq_mutex);
+                    switch (session.u8AccountStatusType)
+                    {
+                        case SESSION_START:
+                            rabbitmq_publish_start(&g_rabbitmq, json, (size_t)jlen);
+                            break;
+                        case SESSION_STOP:
+                            rabbitmq_publish_stop(&g_rabbitmq, json, (size_t)jlen);
+                            break;
+                        case SESSION_UPDATE:
+                            rabbitmq_publish_update(&g_rabbitmq, json, (size_t)jlen);
+                            break;
+                        default:
+                            break;
+                    }
+                    pthread_mutex_unlock(&g_rabbitmq_mutex);
+                }
             }
             else
             {
@@ -249,6 +276,8 @@ void *worker_thread(void *arg)
     const double throughput_pps = (total_processing_ns > 0) ? ((double)total_packets / ((double)total_processing_ns / 1000000000.0)) : 0.0;
     if (opt_verbosity > 1)
         syslog(LOG_INFO, "Worker %d exiting | Packets=%lu | ParseFail=%lu | AttrFail=%lu | Total=%.3f ms | Avg=%.3f us/pkt | Throughput=%.2f pkt/sec", core_id, total_packets, parse_failures, attribute_failures, total_ms, avg_us, throughput_pps);
+    
+    /* cleanup handled in main */
     return NULL;
 }
 
@@ -272,9 +301,11 @@ void start_worker_threads(void)
 {
     queue_init(&global_queue);
     parse_core_ids(opt_threads_str, cores, &core_count);
+    static int worker_indices[MAX_THREADS];
     for (uint16_t i = 0; i < core_count; i++)
     {
-        pthread_create(&worker_threads[i], NULL, worker_thread, &cores[i]);
+        worker_indices[i] = (int)i;
+        pthread_create(&worker_threads[i], NULL, worker_thread, &worker_indices[i]);
     }
     pthread_create(&timeout_tid, NULL, session_timeout_thread, NULL);
     if (opt_verbosity > 1)
