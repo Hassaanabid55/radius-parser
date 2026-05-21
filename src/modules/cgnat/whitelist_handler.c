@@ -1,6 +1,6 @@
 #include "modules/cgnat/whitelist_handler.h"
 
-static WlNode *g_wl_map = NULL;
+WlNode *g_wl_map = NULL;
 
 /* =========================
  LOAD FROM FILE

@@ -337,7 +337,7 @@ void start_file_capture(const char *file_path)
     {
         usleep(1000); // avoid busy spin
     }
-    
+
     if (opt_verbosity > 2)
         print_session_map();
 

@@ -5,11 +5,14 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <sys/syslog.h>
+#include <pthread.h>
 #include <time.h>
 #include <stdarg.h>
 #include <arpa/inet.h>
 
-#include "radius_attribute_list.h"
+#include "uthash.h"
+
+#include "modules/cgnat/whitelist_handler.h"
 
 extern bool opt_extract_all;
 
@@ -35,6 +38,7 @@ typedef struct
     uint8_t u8FramedIpv4PubAddress[IPV4_OCTETS];
     uint16_t portStart;
     uint16_t portEnd;
+    uint32_t packet_count;
     struct tm sSessionStartTime;
     struct tm sSessionEndTime;
     uint32_t destroy_time;
@@ -42,6 +46,13 @@ typedef struct
     uint16_t extra_avp_count;
     extra_avps extra_avps[MAX_EXTRA_AVPS];
 } UserSessionInfo;
+
+typedef struct SessionNode
+{
+    char acAccountSessionId[SESSION_ID_MAX_LEN];
+    UserSessionInfo entry;
+    UT_hash_handle hh;
+} SessionNode;
 
 /* =========================================================
  * SESSION TYPE STRING
@@ -64,38 +75,7 @@ static inline const char *session_type_str(uint8_t type)
     }
 }
 
-#include <stdio.h>
-
-static int session_to_json(const UserSessionInfo *s, char *buf, size_t max)
-{
-    return snprintf(buf, max,
-        "{"
-        "\"ts\":%u,"
-        "\"status\":%u,"
-        "\"session_id\":\"%s\","
-        "\"multi_session_id\":\"%s\","
-        "\"ipv4\":\"%u.%u.%u.%u\","
-        "\"calling_station\":\"%s\","
-        "\"wl\":%u,"
-        "\"port_start\":%u,"
-        "\"port_end\":%u"
-        "}",
-
-        s->u32EventTimestamp,
-        s->u8AccountStatusType,
-        s->acAccountSessionId,
-        s->acMultiSessionId,
-
-        s->u8FramedIpv4Address[0],
-        s->u8FramedIpv4Address[1],
-        s->u8FramedIpv4Address[2],
-        s->u8FramedIpv4Address[3],
-
-        s->acCallingStationId,
-        s->u8IsWL,
-        s->portStart,
-        s->portEnd
-    );
-}
+extern SessionNode *g_session_map;
+extern pthread_mutex_t g_session_mutex;
 
 void printUserSession(const UserSessionInfo *pSession);

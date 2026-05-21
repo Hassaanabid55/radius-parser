@@ -9,9 +9,6 @@
 #include <time.h>
 
 #include <capture.h>
-#include <macros.h>
-
-#include "modules/mysql/db.h"
 
 typedef enum
 {
@@ -37,6 +34,7 @@ typedef enum
     ARG_RABBITMQ_VHOST,
     ARG_RABBITMQ_USER,
     ARG_RABBITMQ_PASSWORD,
+    ARG_RABBITMQ_EXCHANGE,
     ARG_RABBITMQ_PORT,
 } ArgType;
 
@@ -57,6 +55,7 @@ char opt_rabbitmq_host[128] = "";
 char opt_rabbitmq_vhost[64] = "";
 char opt_rabbitmq_user[64] = "";
 char opt_rabbitmq_password[64] = "";
+char opt_rabbitmq_exchange[64] = "";
 
 uint8_t opt_verbosity = 0;
 uint16_t opt_caplen = 3200;
@@ -73,7 +72,6 @@ bool opt_extract_all = false;
  ========================= */
 volatile sig_atomic_t g_running = 1;
 int cores[MAX_CORE_COUNT];
-RabbitMQClient g_rabbitmq;
 uint16_t core_count;
 
 /* =========================
@@ -190,6 +188,9 @@ static inline ArgType get_arg_type(const char *arg)
 
     if (!strcmp(arg, "--rabbitmq-password"))
         return ARG_RABBITMQ_PASSWORD;
+
+    if (!strcmp(arg, "--rabbitmq-exchange"))
+        return ARG_RABBITMQ_EXCHANGE;
 
     if (!strcmp(arg, "--rabbitmq-port"))
         return ARG_RABBITMQ_PORT;
@@ -367,6 +368,9 @@ void load_config(const char *path)
         else if (!strcmp(key, "rabbitmq_password"))
             safe_strcpy(opt_rabbitmq_password, sizeof(opt_rabbitmq_password), val);
 
+        else if (!strcmp(key, "rabbitmq_exchange"))
+            safe_strcpy(opt_rabbitmq_exchange, sizeof(opt_rabbitmq_exchange), val);
+
         else if (!strcmp(key, "rabbitmq_port"))
             opt_rabbitmq_port = parse_u16(val);
     }
@@ -507,6 +511,11 @@ int main(int argc, char *argv[])
                 safe_strcpy(opt_rabbitmq_password, sizeof(opt_rabbitmq_password), argv[++i]);
             break;
 
+        case ARG_RABBITMQ_EXCHANGE:
+            if (i + 1 < argc)
+                safe_strcpy(opt_rabbitmq_exchange, sizeof(opt_rabbitmq_exchange), argv[++i]);
+            break;
+
         case ARG_RABBITMQ_PORT:
             if (i + 1 < argc)
                 opt_rabbitmq_port = parse_u16(argv[++i]);
@@ -516,6 +525,19 @@ int main(int argc, char *argv[])
             break;
         }
     }
+
+    RabbitMQBootstrapState mq_state;
+
+    RabbitMQConfig cfg;
+    safe_strcpy(cfg.host, sizeof(cfg.host), opt_rabbitmq_host);
+    safe_strcpy(cfg.vhost, sizeof(cfg.vhost), opt_rabbitmq_vhost);
+    safe_strcpy(cfg.user, sizeof(cfg.user), opt_rabbitmq_user);
+    safe_strcpy(cfg.password, sizeof(cfg.password), opt_rabbitmq_password);
+    safe_strcpy(cfg.exchange, sizeof(cfg.exchange), opt_rabbitmq_exchange);
+    cfg.port = opt_rabbitmq_port;
+
+    /* 1. RabbitMQ init */
+    rabbitmq_init(&cfg);
 
     /* =========================
      DATABASE INIT
@@ -532,44 +554,54 @@ int main(int argc, char *argv[])
     /* =========================
      DATA LOADING
      ========================= */
-    if (db_is_enabled())
+
+    rabbitmq_bootstrap_state(&g_rabbitmq, &g_session_map, &g_cgnat_map, &g_wl_map, &mq_state);
+
+    if (!mq_state.has_session_state)
     {
-        if (opt_verbosity > 0)
-            syslog(LOG_INFO, "Loading data from DB");
-
-        if (__builtin_expect(db_load_whitelist() != 0, 0))
+        if (db_is_enabled())
         {
-            syslog(LOG_ERR, "Failed loading whitelist from DB");
-            return EXIT_FAILURE;
+            if (opt_verbosity > 0)
+                syslog(LOG_INFO, "Loading data from DB");
+
+            if (__builtin_expect(db_load_whitelist() != 0, 0))
+            {
+                syslog(LOG_ERR, "Failed loading whitelist from DB");
+                return EXIT_FAILURE;
+            }
+
+            if (__builtin_expect(db_load_cgnat() != 0, 0))
+            {
+                syslog(LOG_ERR, "Failed loading CGNAT from DB");
+                return EXIT_FAILURE;
+            }
         }
-
-        if (__builtin_expect(db_load_cgnat() != 0, 0))
+        else
         {
-            syslog(LOG_ERR, "Failed loading CGNAT from DB");
-            return EXIT_FAILURE;
+            if (opt_verbosity > 0)
+                syslog(LOG_INFO, "Loading data from files");
+            if (!opt_whitelist_file_path[0] || !opt_cgnat_file_path[0])
+            {
+                syslog(LOG_ERR, "Whitelist/CGNAT file missing");
+                return EXIT_FAILURE;
+            }
+
+            if (__builtin_expect(wl_load_from_file(opt_whitelist_file_path) != 0, 0))
+            {
+                syslog(LOG_ERR, "Failed loading whitelist file");
+                return EXIT_FAILURE;
+            }
+
+            if (__builtin_expect(cgnat_load_from_csv(opt_cgnat_file_path) != 0, 0))
+            {
+                syslog(LOG_ERR, "Failed loading CGNAT CSV");
+                return EXIT_FAILURE;
+            }
         }
     }
     else
     {
-        if (opt_verbosity > 0)
-            syslog(LOG_INFO, "Loading data from files");
-        if (!opt_whitelist_file_path[0] || !opt_cgnat_file_path[0])
-        {
-            syslog(LOG_ERR, "Whitelist/CGNAT file missing");
-            return EXIT_FAILURE;
-        }
-
-        if (__builtin_expect(wl_load_from_file(opt_whitelist_file_path) != 0, 0))
-        {
-            syslog(LOG_ERR, "Failed loading whitelist file");
-            return EXIT_FAILURE;
-        }
-
-        if (__builtin_expect(cgnat_load_from_csv(opt_cgnat_file_path) != 0, 0))
-        {
-            syslog(LOG_ERR, "Failed loading CGNAT CSV");
-            return EXIT_FAILURE;
-        }
+        syslog(LOG_INFO, "Session state restored from RabbitMQ");
     }
 
     /* =========================

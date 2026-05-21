@@ -1,6 +1,6 @@
 #include "modules/cgnat/cgnat_handler.h"
 
-static CgnatNode *g_cgnat_map = NULL;
+CgnatNode *g_cgnat_map = NULL;
 
 /* =========================
  LOAD FROM CSV

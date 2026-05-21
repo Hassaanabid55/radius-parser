@@ -6,7 +6,6 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/syslog.h>
 #include <time.h>
 
@@ -15,10 +14,6 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 
-#include "user_session.h"
-#include "uthash.h"
-#include "modules/cgnat/whitelist_handler.h"
-#include "modules/cgnat/cgnat_handler.h"
 #include "modules/rabbitmq/rabbitmq_producer.h"
 
 typedef struct
@@ -31,15 +26,7 @@ typedef struct
     uint8_t identifier;
 } RadiusPacket;
 
-typedef struct SessionNode
-{
-    char acAccountSessionId[SESSION_ID_MAX_LEN];
-    UserSessionInfo entry;
-    UT_hash_handle hh;
-} SessionNode;
-
 extern SessionNode *g_session_map;
-extern pthread_mutex_t g_session_mutex;
 extern bool opt_extract_all;
 extern volatile sig_atomic_t g_running;
 extern uint32_t opt_update_timeout;

@@ -5,6 +5,8 @@
 #include <syslog.h>
 #include <mysql/mysql.h>
 
+#include "user_session.h"
+
 typedef struct
 {
     bool enabled;

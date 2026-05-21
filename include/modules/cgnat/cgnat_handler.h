@@ -7,6 +7,8 @@
 
 #include "uthash.h"
 
+#include "radius_attribute_list.h"
+
 typedef struct
 {
     char inside_ip[16];
@@ -22,6 +24,8 @@ typedef struct CgnatNode
     UT_hash_handle hh;
 } CgnatNode;
 
+extern CgnatNode *g_cgnat_map;
 extern uint8_t opt_verbosity;
+
 int cgnat_load_from_csv(const char *path);
 bool cgnat_lookup(const char *inside_ip, CgnatEntry *out);

@@ -228,6 +228,19 @@ void *worker_thread(void *arg)
                 {
                     printUserSession(&session);
                 }
+                pthread_mutex_lock(&g_rabbitmq_mutex);
+                switch (session.u8AccountStatusType)
+                {
+                case SESSION_START:
+                    rabbitmq_publish_session_start(&g_rabbitmq, &session);
+                    break;
+                case SESSION_STOP:
+                    rabbitmq_publish_session_stop(&g_rabbitmq, &session);
+                    break;
+                default:
+                    break;
+                }
+                pthread_mutex_unlock(&g_rabbitmq_mutex);
             }
             else
             {

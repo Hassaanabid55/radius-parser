@@ -7,6 +7,8 @@
 
 #include "uthash.h"
 
+#include "modules/cgnat/cgnat_handler.h"
+
 typedef struct
 {
     char msisdn[32];
@@ -20,6 +22,7 @@ typedef struct WlNode
     UT_hash_handle hh;
 } WlNode;
 
+extern WlNode *g_wl_map;
 extern uint8_t opt_verbosity;
 
 int wl_load_from_file(const char *path);

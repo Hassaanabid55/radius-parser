@@ -3,19 +3,21 @@
 #define RADIUS_AUTHENTICATOR_FIELD_LENGTH 16 /**< Number of bytes reserved for authenticator field */
 #define MAX_CORE_COUNT 256
 
-#define RABBITMQ_EXCHANGE "radius_exchange"
+/* =========================================================
+ * ROUTING KEYS
+ * ========================================================= */
 
-#define START_QUEUE "radius_start_queue"
-#define UPDATE_QUEUE "radius_update_queue"
-#define STOP_QUEUE "radius_stop_queue"
+/* Event streams */
+#define RK_SESSION_START "session.start"
+#define RK_SESSION_STOP "session.stop"
 
-#define START_ROUTING_KEY "radius.start"
-#define UPDATE_ROUTING_KEY "radius.update"
-#define STOP_ROUTING_KEY "radius.stop"
+/* Stats stream */
+#define RK_SESSION_STATS "session.stats"
 
-#define CGNAT_QUEUE      "state.cgnat"
-#define WHITELIST_QUEUE  "state.whitelist"
-#define SESSION_QUEUE    "state.session"
+/* Sync stream */
+#define RK_SYNC_SESSION "sync.session"
+#define RK_SYNC_CGNAT "sync.cgnat"
+#define RK_SYNC_WHITELIST "sync.whitelist"
 
 #define USER_NAME 1                            /**< text [RFC2865] */
 #define USER_PASSWORD 2                        /**< string [RFC2865]*/

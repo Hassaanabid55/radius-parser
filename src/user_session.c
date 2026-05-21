@@ -1,5 +1,8 @@
 #include "user_session.h"
 
+SessionNode *g_session_map = NULL;
+pthread_mutex_t g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* =========================================================
  * MAIN SESSION LOGGER
  * ========================================================= */

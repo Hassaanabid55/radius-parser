@@ -9,9 +9,6 @@ static uint64_t g_session_total_updates = 0;
 static uint64_t g_session_total_deletes = 0;
 static uint8_t shard = 0;
 
-SessionNode *g_session_map = NULL;
-pthread_mutex_t g_session_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 void session_print_stats()
 {
     syslog(LOG_INFO, "================ SESSION MAP STATS ================");
@@ -29,39 +26,6 @@ void session_print_stats()
         syslog(LOG_INFO, "Approx memory     : %zu KB", approx_mem / 1024);
     }
     syslog(LOG_INFO, "===================================================");
-}
-
-int rabbitmq_send_start(RabbitMQClient *client, const UserSessionInfo *session)
-{
-    char json[2048];
-
-    int len = session_to_json(session, json, sizeof(json));
-    if (len <= 0 || len >= (int)sizeof(json))
-        return 0;
-
-    return rabbitmq_publish_start(client, json, (size_t)len);
-}
-
-int rabbitmq_send_update(RabbitMQClient *client, const UserSessionInfo *session)
-{
-    char json[2048];
-
-    int len = session_to_json(session, json, sizeof(json));
-    if (len <= 0 || len >= (int)sizeof(json))
-        return 0;
-
-    return rabbitmq_publish_update(client, json, (size_t)len);
-}
-
-int rabbitmq_send_stop(RabbitMQClient *client, const UserSessionInfo *session)
-{
-    char json[2048];
-
-    int len = session_to_json(session, json, sizeof(json));
-    if (len <= 0 || len >= (int)sizeof(json))
-        return 0;
-
-    return rabbitmq_publish_stop(client, json, (size_t)len);
 }
 
 /* =========================================================
@@ -257,7 +221,12 @@ void *session_timeout_thread(void *arg)
 
             if (opt_verbosity > 2)
                 syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
+
+            pthread_mutex_lock(&g_rabbitmq_mutex);
+            rabbitmq_publish_session_stop(&g_rabbitmq, &node->entry);
+            pthread_mutex_unlock(&g_rabbitmq_mutex);
             HASH_DEL(g_session_map, node);
+
             if (g_session_count > 0)
                 g_session_count--;
 
@@ -508,6 +477,12 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         sessionStart(pSession);
         pSession->destroy_time = (uint32_t)time(NULL) + opt_update_timeout;
         int rc = session_insert(pSession);
+        if (pSession->u8AccountStatusType == SESSION_UPDATE)
+        {
+            pthread_mutex_lock(&g_rabbitmq_mutex);
+            rabbitmq_publish_session_start(&g_rabbitmq, pSession);
+            pthread_mutex_unlock(&g_rabbitmq_mutex);
+        }
         if (rc == 0)
         {
             g_session_count++;
