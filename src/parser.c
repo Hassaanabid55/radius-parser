@@ -1,4 +1,6 @@
 #include "parser.h"
+extern RabbitMQClient g_rabbitmq;
+extern pthread_mutex_t g_rabbitmq_mutex;
 
 static uint64_t g_session_count = 0;
 static uint64_t g_session_inserts = 0;
@@ -262,6 +264,18 @@ void *session_timeout_thread(void *arg)
                 g_session_count--;
 
             g_session_deletes++;
+            {
+                char json[2048];
+                int jlen = session_to_json(&node->entry, json, sizeof(json));
+                pthread_mutex_unlock(&g_session_mutex);
+                if (jlen > 0)
+                {
+                    pthread_mutex_lock(&g_rabbitmq_mutex);
+                    rabbitmq_publish_stop(&g_rabbitmq, json, (size_t)jlen);
+                    pthread_mutex_unlock(&g_rabbitmq_mutex);
+                }
+                pthread_mutex_lock(&g_session_mutex);
+            }
             free(node);
         }
         shard = (shard + 1) % 10;

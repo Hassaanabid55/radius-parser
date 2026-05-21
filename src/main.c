@@ -601,6 +601,10 @@ int main(int argc, char *argv[])
             syslog(LOG_INFO, "Processing input file: %s", opt_input_files);
 
         start_file_capture(opt_input_files);
+        /* wait for session timeouts before shutting down */
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Waiting for session timeouts...");
+        sleep(opt_update_timeout + 2);
         cleanup();
     }
     else
