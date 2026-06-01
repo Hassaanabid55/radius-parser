@@ -36,13 +36,15 @@ static inline SessionNode *session_find(const char *id)
 
 static inline int session_insert(const UserSessionInfo *s)
 {
-    if (!s) return -1;
+    if (!s)
+        return -1;
 
     SessionNode *node = malloc(sizeof(SessionNode));
-    if (!node) return -1;
+    if (!node)
+        return -1;
 
     memset(node, 0, sizeof(*node));
-    memcpy(node->acAccountSessionId,           s->acAccountSessionId,           sizeof(node->acAccountSessionId) - 1);
+    memcpy(node->acAccountSessionId, s->acAccountSessionId, sizeof(node->acAccountSessionId) - 1);
     node->entry = *s;
     int is_new = 0;
     pthread_mutex_lock(&g_session_mutex);
@@ -70,7 +72,8 @@ static inline int session_insert(const UserSessionInfo *s)
 
 static inline void session_delete(SessionNode *node)
 {
-    if (!node) return;
+    if (!node)
+        return;
 
     char id_copy[SESSION_ID_MAX_LEN];
     strncpy(id_copy, node->acAccountSessionId, sizeof(id_copy));
