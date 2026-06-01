@@ -1,7 +1,41 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/time.h>
+#include <sys/syslog.h>
+#include <syslog.h>
+#include <sched.h>
+#include <time.h>
+#include <pthread.h>
+#include <stdatomic.h>
+
+#include <arpa/inet.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <net/ethernet.h>
+#include <pcap.h>
+
+#include <mysql/mysql.h>
+#include <amqp.h>
+#include <amqp_tcp_socket.h>
+
+#include "uthash.h"
+
+/* =========================================================
+ * RADIUS FIXED FIELD SIZES
+ * ========================================================= */
+
 #define RADIUS_LENGTH_FIELD_LENGTH 2         /**< Number of bytes reserved for length field */
 #define RADIUS_IDENTIFIER_FIELD_LENGTH 1     /**< Number of bytes reserved for identifier field */
 #define RADIUS_AUTHENTICATOR_FIELD_LENGTH 16 /**< Number of bytes reserved for authenticator field */
-#define MAX_CORE_COUNT 256
+#define RADIUS_HDR_LEN 20
 
 /* =========================================================
  * ROUTING KEYS
@@ -16,8 +50,11 @@
 
 /* Sync stream */
 #define RK_SYNC_SESSION "sync.session"
-#define RK_SYNC_CGNAT "sync.cgnat"
-#define RK_SYNC_WHITELIST "sync.whitelist"
+#define RK_SYNC_SESSION_DELETE "sync.session.delete"
+
+/* =========================================================
+ * RADIUS ATTRIBUTE TYPES (RFC MAPPING)
+ * ========================================================= */
 
 #define USER_NAME 1                            /**< text [RFC2865] */
 #define USER_PASSWORD 2                        /**< string [RFC2865]*/
@@ -206,11 +243,17 @@
 #define WLAN_GROUP_MGMT_CIPHER 189             /**< integer [RFC7268]*/
 #define WLAN_RF_BAND 190                       /**< integer [RFC7268]*/
 
+/* =========================================================
+ * RADIUS PORTS / CODES
+ * ========================================================= */
+
 #define RADIUS_ACCT_PORT_1 1813
 #define RADIUS_ACCT_PORT_2 1812
-
 #define RADIUS_CODE_ACCT_REQ 4
-#define RADIUS_HDR_LEN 20
+
+/* =========================================================
+ * VALID FIELD BITMASKS
+ * ========================================================= */
 
 #define VALID_ACCT_STATUS_TYPE (1ULL << 0)
 #define VALID_ACCT_SESSION_ID (1ULL << 1)
@@ -220,17 +263,42 @@
 #define VALID_EVENT_TIMESTAMP (1ULL << 5)
 #define VALID_ACCT_MULTI_SESSION_ID (1ULL << 6)
 
-#define IPV6_PREFIX_MAX_LEN 18 /**< length of max ipv6 prefix including 2 bytes of dialing code */
-#define SESSION_START 1        /**< Session start on RADIUS START message */
-#define SESSION_STOP 2         /**< Session stop on RADIUS STOP message */
-#define SESSION_UPDATE 3       /**< Session update on RADIUS UPDATE message */
-#define IPV4_OCTETS 4          /**< Octets in IPv4 Address */
+/* =========================================================
+ * SESSION TYPES
+ * ========================================================= */
 
+#define SESSION_START 1  /**< Session start on RADIUS START message */
+#define SESSION_STOP 2   /**< Session stop on RADIUS STOP message */
+#define SESSION_UPDATE 3 /**< Session update on RADIUS UPDATE message */
+
+/* =========================================================
+ * CORE CONSTANTS
+ * ========================================================= */
+
+#define IPV6_PREFIX_MAX_LEN 18 /**< length of max ipv6 prefix including 2 bytes of dialing code */
+#define IPV4_OCTETS 4          /**< Octets in IPv4 Address */
 #define SESSION_ID_MAX_LEN 64
 #define MAX_EXTRA_AVPS 256
 #define MAX_AVP_VALUE 256
-
 #define MAX_QUEUE_SIZE 4096
+#define MAX_CORE_COUNT 256
 #define MAX_THREADS 64
-
 #define MAX_LINE 512
+
+/* =========================================================
+ * ENUMS
+ * ========================================================= */
+
+typedef enum
+{
+    L4_UNKNOWN = 0,
+    L4_TCP,
+    L4_UDP
+} L4Protocol;
+
+typedef enum
+{
+    PKT_UNKNOWN = 0,
+    PKT_RADIUS_AUTH,
+    PKT_RADIUS_ACCT
+} PacketType;

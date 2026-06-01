@@ -1,15 +1,4 @@
-#pragma once
-
-#include <stdint.h>
-#include <stdio.h>
-
-#include "macros.h"
-
-typedef struct
-{
-    uint16_t type;
-    const char *name;
-} RadiusAttributeMap;
+#include "datatypes/structs.h"
 
 static const RadiusAttributeMap g_radiusAttributeMap[] =
     {

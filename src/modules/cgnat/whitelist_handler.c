@@ -1,6 +1,7 @@
 #include "modules/cgnat/whitelist_handler.h"
 
 WlNode *g_wl_map = NULL;
+pthread_mutex_t g_wl_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* =========================
  LOAD FROM FILE
@@ -33,6 +34,7 @@ int wl_load_from_file(const char *path)
         strncpy(node->info.msisdn, msisdn, sizeof(node->info.msisdn));
         node->info.status = (status != 0);
         HASH_ADD_STR(g_wl_map, msisdn, node);
+        wl_table_size++;
     }
 
     fclose(fp);

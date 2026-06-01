@@ -1,17 +1,3 @@
-#pragma once
-
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <stdbool.h>
-#include <pcap.h>
-#include <sys/syslog.h>
-
-#include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <net/ethernet.h>
-#include <arpa/inet.h>
-
 #include "worker.h"
 
 extern char opt_interface_name[64];

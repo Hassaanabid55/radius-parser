@@ -7,6 +7,7 @@
 #include <syslog.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #include <capture.h>
 
@@ -554,54 +555,46 @@ int main(int argc, char *argv[])
     /* =========================
      DATA LOADING
      ========================= */
+    rabbitmq_bootstrap_state(&g_rabbitmq, &g_session_map, &mq_state);
 
-    rabbitmq_bootstrap_state(&g_rabbitmq, &g_session_map, &g_cgnat_map, &g_wl_map, &mq_state);
-
-    if (!mq_state.has_session_state)
+    if (db_is_enabled())
     {
-        if (db_is_enabled())
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Loading data from DB");
+
+        if (__builtin_expect(db_load_whitelist() != 0, 0))
         {
-            if (opt_verbosity > 0)
-                syslog(LOG_INFO, "Loading data from DB");
-
-            if (__builtin_expect(db_load_whitelist() != 0, 0))
-            {
-                syslog(LOG_ERR, "Failed loading whitelist from DB");
-                return EXIT_FAILURE;
-            }
-
-            if (__builtin_expect(db_load_cgnat() != 0, 0))
-            {
-                syslog(LOG_ERR, "Failed loading CGNAT from DB");
-                return EXIT_FAILURE;
-            }
+            syslog(LOG_ERR, "Failed loading whitelist from DB");
+            return EXIT_FAILURE;
         }
-        else
+
+        if (__builtin_expect(db_load_cgnat() != 0, 0))
         {
-            if (opt_verbosity > 0)
-                syslog(LOG_INFO, "Loading data from files");
-            if (!opt_whitelist_file_path[0] || !opt_cgnat_file_path[0])
-            {
-                syslog(LOG_ERR, "Whitelist/CGNAT file missing");
-                return EXIT_FAILURE;
-            }
-
-            if (__builtin_expect(wl_load_from_file(opt_whitelist_file_path) != 0, 0))
-            {
-                syslog(LOG_ERR, "Failed loading whitelist file");
-                return EXIT_FAILURE;
-            }
-
-            if (__builtin_expect(cgnat_load_from_csv(opt_cgnat_file_path) != 0, 0))
-            {
-                syslog(LOG_ERR, "Failed loading CGNAT CSV");
-                return EXIT_FAILURE;
-            }
+            syslog(LOG_ERR, "Failed loading CGNAT from DB");
+            return EXIT_FAILURE;
         }
     }
     else
     {
-        syslog(LOG_INFO, "Session state restored from RabbitMQ");
+        if (opt_verbosity > 0)
+            syslog(LOG_INFO, "Loading data from files");
+        if (!opt_whitelist_file_path[0] || !opt_cgnat_file_path[0])
+        {
+            syslog(LOG_ERR, "Whitelist/CGNAT file missing");
+            return EXIT_FAILURE;
+        }
+
+        if (__builtin_expect(wl_load_from_file(opt_whitelist_file_path) != 0, 0))
+        {
+            syslog(LOG_ERR, "Failed loading whitelist file");
+            return EXIT_FAILURE;
+        }
+
+        if (__builtin_expect(cgnat_load_from_csv(opt_cgnat_file_path) != 0, 0))
+        {
+            syslog(LOG_ERR, "Failed loading CGNAT CSV");
+            return EXIT_FAILURE;
+        }
     }
 
     /* =========================
@@ -628,7 +621,7 @@ int main(int argc, char *argv[])
     /* =========================
      WAIT FOR SHUTDOWN
      ========================= */
-    while (g_running)
+    while (__builtin_expect(g_running, 1))
     {
         sleep(1);
     }
@@ -641,6 +634,7 @@ int main(int argc, char *argv[])
         pthread_join(worker_threads[i], NULL);
     }
     pthread_join(timeout_tid, NULL);
+    pthread_join(sync_tid, NULL);
     if (opt_verbosity > 1)
         pthread_join(stats_worker_threads, NULL);
 

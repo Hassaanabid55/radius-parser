@@ -3,6 +3,25 @@
 RabbitMQClient g_rabbitmq;
 pthread_mutex_t g_rabbitmq_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+extern SessionNode *g_session_map;
+extern pthread_mutex_t g_session_mutex;
+
+/* =========================================================
+ * SAFE PUBLISH
+ * ========================================================= */
+static int rabbitmq_publish_locked(RabbitMQClient *c, const char *exchange, const char *routing_key, const void *data, size_t len)
+{
+    amqp_bytes_t body = {
+        .len = len,
+        .bytes = (void *)data};
+
+    pthread_mutex_lock(&g_rabbitmq_mutex);
+    int rc = amqp_basic_publish(c->conn, c->channel, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routing_key), 0, 0, NULL, body);
+    pthread_mutex_unlock(&g_rabbitmq_mutex);
+
+    return rc == 0;
+}
+
 /* =========================================================
  * INIT
  * ========================================================= */
@@ -21,23 +40,15 @@ int rabbitmq_init(const RabbitMQConfig *cfg)
         return 0;
 
     amqp_rpc_reply_t r = amqp_login(g_rabbitmq.conn, cfg->vhost, 0, 131072, 60, AMQP_SASL_METHOD_PLAIN, cfg->user, cfg->password);
-
     if (r.reply_type != AMQP_RESPONSE_NORMAL)
         return 0;
 
     g_rabbitmq.channel = 1;
     amqp_channel_open(g_rabbitmq.conn, g_rabbitmq.channel);
-
     if (amqp_get_rpc_reply(g_rabbitmq.conn).reply_type != AMQP_RESPONSE_NORMAL)
         return 0;
 
-    /* Exchange */
-    amqp_exchange_declare(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes(g_rabbitmq.cfg.exchange), amqp_cstring_bytes("direct"), 0, 1, 0, 0, amqp_empty_table);
-
-    amqp_queue_declare(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes("sync.session"), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_declare(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes("sync.cgnat"), 0, 1, 0, 0, amqp_empty_table);
-    amqp_queue_declare(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes("sync.whitelist"), 0, 1, 0, 0, amqp_empty_table);
-
+    amqp_exchange_declare(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes(cfg->exchange), amqp_cstring_bytes("direct"), 0, 1, 0, 0, amqp_empty_table);
     return 1;
 }
 
@@ -46,11 +57,7 @@ int rabbitmq_init(const RabbitMQConfig *cfg)
  * ========================================================= */
 int rabbitmq_publish_raw(RabbitMQClient *c, const char *exchange, const char *routing_key, const void *data, size_t len)
 {
-    amqp_bytes_t body;
-    body.len = len;
-    body.bytes = (void *)data;
-
-    return amqp_basic_publish(c->conn, c->channel, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routing_key), 0, 0, NULL, body) == 0;
+    return rabbitmq_publish_locked(c, exchange, routing_key, data, len);
 }
 
 /* =========================================================
@@ -67,6 +74,19 @@ int rabbitmq_publish_session_stop(RabbitMQClient *c, const UserSessionInfo *s)
 }
 
 /* =========================================================
+ * SYNC STREAM (STATE MODEL)
+ * ========================================================= */
+int rabbitmq_publish_session_sync(RabbitMQClient *c, const UserSessionInfo *s)
+{
+    return rabbitmq_publish_raw(c, g_rabbitmq.cfg.exchange, RK_SYNC_SESSION, s, sizeof(*s));
+}
+
+int rabbitmq_publish_session_delete(RabbitMQClient *c, const char *session_id)
+{
+    return rabbitmq_publish_raw(c, g_rabbitmq.cfg.exchange, RK_SYNC_SESSION_DELETE, session_id, strlen(session_id) + 1);
+}
+
+/* =========================================================
  * STATS STREAM
  * ========================================================= */
 int rabbitmq_publish_session_stats(RabbitMQClient *c, const UserSessionInfo *s)
@@ -75,7 +95,7 @@ int rabbitmq_publish_session_stats(RabbitMQClient *c, const UserSessionInfo *s)
 }
 
 /* =========================================================
- * INTERNAL HANDLER (SESSION RESTORE)
+ * SESSION RESTORE
  * ========================================================= */
 static void restore_session(SessionNode **map, const UserSessionInfo *s)
 {
@@ -91,8 +111,7 @@ static void restore_session(SessionNode **map, const UserSessionInfo *s)
     }
     else
     {
-        node = malloc(sizeof(SessionNode));
-        memset(node, 0, sizeof(*node));
+        node = calloc(1, sizeof(SessionNode));
         strcpy(node->acAccountSessionId, s->acAccountSessionId);
         node->entry = *s;
         HASH_ADD_STR(*map, acAccountSessionId, node);
@@ -102,82 +121,139 @@ static void restore_session(SessionNode **map, const UserSessionInfo *s)
 }
 
 /* =========================================================
- * CONSUME BOOTSTRAP STREAM
+ * HANDLER
  * ========================================================= */
-
-static void handle_boot_message(
-    const char *queue,
-    const void *data,
-    size_t len,
-    void *ctx)
+static void handle_boot_message(const char *queue, const void *data, size_t len, void *ctx)
 {
     RabbitMQBootstrapCtx *boot = ctx;
 
-    SessionNode **session_map = boot->session_map;
-    CgnatNode **cgnat_map = boot->cgnat_map;
-    WlNode **wl_map = boot->wl_map;
-    RabbitMQBootstrapState *state = boot->state;
-
-    (void)len;
-
-    /* SESSION STREAM */
-    if (strcmp(queue, "sync.session") == 0)
+    if (strcmp(queue, RK_SYNC_SESSION) == 0)
     {
-        const UserSessionInfo *s = (const UserSessionInfo *)data;
+        if (len != sizeof(UserSessionInfo))
+            return;
 
-        restore_session(session_map, s);
-        state->sessions_loaded = 1;
-        state->has_session_state = 1;
+        restore_session(boot->session_map, data);
+        boot->state->sessions_loaded = 1;
         return;
     }
 
-    /* CGNAT STREAM */
-    if (strcmp(queue, "sync.cgnat") == 0)
+    if (strcmp(queue, RK_SYNC_SESSION_DELETE) == 0)
     {
-        const CgnatEntry *e = (const CgnatEntry *)data;
+        const char *id = data;
 
-        CgnatNode *n = malloc(sizeof(CgnatNode));
-        memset(n, 0, sizeof(*n));
-        strcpy(n->inside_ip, e->inside_ip);
-        n->entry = *e;
+        pthread_mutex_lock(&g_session_mutex);
 
-        HASH_ADD_STR(*cgnat_map, inside_ip, n);
-        state->cgnat_loaded = 1;
-        return;
-    }
+        SessionNode *node = NULL;
+        HASH_FIND_STR(*boot->session_map, id, node);
 
-    /* WHITELIST STREAM */
-    if (strcmp(queue, "sync.whitelist") == 0)
-    {
-        const WhitelistInfo *w = (const WhitelistInfo *)data;
+        if (node)
+        {
+            HASH_DEL(*boot->session_map, node);
+            free(node);
+        }
 
-        WlNode *n = malloc(sizeof(WlNode));
-        memset(n, 0, sizeof(*n));
-        strcpy(n->msisdn, w->msisdn);
-        n->info = *w;
-
-        HASH_ADD_STR(*wl_map, msisdn, n);
-        state->whitelist_loaded = 1;
-        return;
+        pthread_mutex_unlock(&g_session_mutex);
     }
 }
 
 /* =========================================================
- * CLUSTER SYNC STREAM
+ * CONSUMER (FIXED DECLARED + DEFINED)
  * ========================================================= */
-int rabbitmq_publish_cgnat_sync(RabbitMQClient *c, const CgnatEntry *e)
+int rabbitmq_consume_sync_queue(RabbitMQClient *c, const char *queue, RabbitMQSyncHandler handler, void *ctx)
 {
-    return rabbitmq_publish_raw(c, g_rabbitmq.cfg.exchange, RK_SYNC_CGNAT, e, sizeof(*e));
+    pthread_mutex_lock(&g_rabbitmq_mutex);
+
+    amqp_basic_consume(c->conn, c->channel, amqp_cstring_bytes(queue), amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
+    if (amqp_get_rpc_reply(c->conn).reply_type != AMQP_RESPONSE_NORMAL)
+    {
+        pthread_mutex_unlock(&g_rabbitmq_mutex);
+        return -1;
+    }
+
+    pthread_mutex_unlock(&g_rabbitmq_mutex);
+
+    while (g_running)
+    {
+        amqp_envelope_t env;
+        struct timeval tv = {0, 200000};
+
+        pthread_mutex_lock(&g_rabbitmq_mutex);
+        amqp_rpc_reply_t res = amqp_consume_message(c->conn, &env, &tv, 0);
+        pthread_mutex_unlock(&g_rabbitmq_mutex);
+
+        if (res.reply_type != AMQP_RESPONSE_NONE)
+            break;
+
+        if (res.reply_type != AMQP_RESPONSE_NORMAL)
+            continue;
+
+        handler(queue, env.message.body.bytes, env.message.body.len, ctx);
+        amqp_destroy_envelope(&env);
+    }
+
+    return 0;
 }
 
-int rabbitmq_publish_whitelist_sync(RabbitMQClient *c, const WhitelistInfo *w)
+/* =========================================================
+ * BOOTSTRAP (DRY READ ONLY)
+ * ========================================================= */
+int rabbitmq_bootstrap_state(RabbitMQClient *client, SessionNode **session_map, RabbitMQBootstrapState *state)
 {
-    return rabbitmq_publish_raw(c, g_rabbitmq.cfg.exchange, RK_SYNC_WHITELIST, w, sizeof(*w));
+    memset(state, 0, sizeof(*state));
+    RabbitMQBootstrapCtx ctx = {
+        .session_map = session_map,
+        .state = state};
+
+    rabbitmq_consume_sync_queue(client, RK_SYNC_SESSION, handle_boot_message, &ctx);
+    rabbitmq_consume_sync_queue(client, RK_SYNC_SESSION_DELETE, handle_boot_message, &ctx);
+
+    state->sessions_loaded = 1;
+    return 0;
 }
 
-int rabbitmq_publish_session_sync(RabbitMQClient *c, const UserSessionInfo *s)
+/* =========================================================
+ * STATS
+ * ========================================================= */
+
+void *rabbitmq_stats_worker(void *arg)
 {
-    return rabbitmq_publish_raw(c, g_rabbitmq.cfg.exchange, RK_SYNC_SESSION, s, sizeof(*s));
+    (void)arg;
+
+    amqp_basic_consume(g_rabbitmq.conn, g_rabbitmq.channel, amqp_cstring_bytes(RK_SESSION_STATS), amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
+    if (amqp_get_rpc_reply(g_rabbitmq.conn).reply_type != AMQP_RESPONSE_NORMAL)
+        return NULL;
+
+    while (g_running)
+    {
+        amqp_envelope_t env;
+        struct timeval tv = {0, 200000};
+
+        pthread_mutex_lock(&g_rabbitmq_mutex);
+        amqp_rpc_reply_t res = amqp_consume_message(g_rabbitmq.conn, &env, &tv, 0);
+        pthread_mutex_unlock(&g_rabbitmq_mutex);
+
+        if (res.reply_type != AMQP_RESPONSE_NORMAL)
+            continue;
+
+        if (env.message.body.len == sizeof(UserSessionInfo))
+        {
+            const UserSessionInfo *s = (const UserSessionInfo *)env.message.body.bytes;
+
+            pthread_mutex_lock(&g_session_mutex);
+
+            SessionNode *node = NULL;
+            HASH_FIND_STR(g_session_map, s->acAccountSessionId, node);
+
+            if (node)
+                node->entry.packet_count = s->packet_count;
+
+            pthread_mutex_unlock(&g_session_mutex);
+        }
+
+        amqp_destroy_envelope(&env);
+    }
+
+    return NULL;
 }
 
 /* =========================================================
@@ -188,49 +264,11 @@ void rabbitmq_cleanup(RabbitMQClient *c)
     if (!c)
         return;
 
+    pthread_mutex_lock(&g_rabbitmq_mutex);
+
     amqp_channel_close(c->conn, c->channel, AMQP_REPLY_SUCCESS);
     amqp_connection_close(c->conn, AMQP_REPLY_SUCCESS);
     amqp_destroy_connection(c->conn);
-}
 
-int rabbitmq_consume_sync_queue(RabbitMQClient *c, const char *queue, RabbitMQSyncHandler handler, void *ctx)
-{
-    amqp_basic_consume(c->conn, c->channel, amqp_cstring_bytes(queue), amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
-    amqp_rpc_reply_t r = amqp_get_rpc_reply(c->conn);
-    if (r.reply_type != AMQP_RESPONSE_NORMAL)
-        return -1;
-
-    while (1)
-    {
-        amqp_envelope_t envelope;
-        amqp_maybe_release_buffers(c->conn);
-
-        struct timeval timeout = {0, 200000}; // 200ms
-        amqp_rpc_reply_t res = amqp_consume_message(c->conn, &envelope, &timeout, 0);
-
-        if (res.reply_type != AMQP_RESPONSE_NORMAL)
-            break;
-
-        handler(queue, envelope.message.body.bytes, envelope.message.body.len, ctx);
-        amqp_destroy_envelope(&envelope);
-    }
-
-    return 0;
-}
-
-int rabbitmq_bootstrap_state(RabbitMQClient *client, SessionNode **session_map, CgnatNode **cgnat_map, WlNode **wl_map, RabbitMQBootstrapState *state)
-{
-    RabbitMQBootstrapCtx ctx = {
-        .session_map = session_map,
-        .cgnat_map = cgnat_map,
-        .wl_map = wl_map,
-        .state = state};
-
-    rabbitmq_consume_sync_queue(client, "sync.session", handle_boot_message, &ctx);
-    rabbitmq_consume_sync_queue(client, "sync.cgnat", handle_boot_message, &ctx);
-    rabbitmq_consume_sync_queue(client, "sync.whitelist", handle_boot_message, &ctx);
-
-    state->has_session_state = (state->sessions_loaded > 0);
-
-    return 0;
+    pthread_mutex_unlock(&g_rabbitmq_mutex);
 }

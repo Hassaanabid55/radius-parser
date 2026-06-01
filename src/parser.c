@@ -1,24 +1,19 @@
 #include "parser.h"
 
-static uint64_t g_session_count = 0;
-static uint64_t g_session_inserts = 0;
-static uint64_t g_session_deletes = 0;
-static uint64_t g_session_updates = 0;
-static uint64_t g_session_total_starts = 0;
-static uint64_t g_session_total_updates = 0;
-static uint64_t g_session_total_deletes = 0;
 static uint8_t shard = 0;
 
 void session_print_stats()
 {
     syslog(LOG_INFO, "================ SESSION MAP STATS ================");
-    syslog(LOG_INFO, "Active sessions   : %lu", g_session_count);
-    syslog(LOG_INFO, "Inserts           : %lu", g_session_inserts);
-    syslog(LOG_INFO, "Deletes           : %lu", g_session_deletes);
-    syslog(LOG_INFO, "Updates           : %lu", g_session_updates);
-    syslog(LOG_INFO, "Total Starts      : %lu", g_session_total_starts);
-    syslog(LOG_INFO, "Total Updates     : %lu", g_session_total_updates);
-    syslog(LOG_INFO, "Total Deletes     : %lu", g_session_total_deletes);
+    syslog(LOG_INFO, "Active sessions          : %lu", g_session_count);
+    syslog(LOG_INFO, "Active cgnat entries     : %lu", cgnat_table_size);
+    syslog(LOG_INFO, "Active whitelist entries : %lu", wl_table_size);
+    syslog(LOG_INFO, "Inserts                  : %lu", g_session_inserts);
+    syslog(LOG_INFO, "Deletes                  : %lu", g_session_deletes);
+    syslog(LOG_INFO, "Updates                  : %lu", g_session_updates);
+    syslog(LOG_INFO, "Total Starts             : %lu", g_session_total_starts);
+    syslog(LOG_INFO, "Total Updates            : %lu", g_session_total_updates);
+    syslog(LOG_INFO, "Total Deletes            : %lu", g_session_total_deletes);
 
     if (g_session_count > 0)
     {
@@ -201,7 +196,7 @@ int parseRadiusPkt(const char *pPacket, size_t len, RadiusPacket *radiusPkt)
 void *session_timeout_thread(void *arg)
 {
     (void)arg;
-    while (g_running)
+    while (__builtin_expect(g_running, 1))
     {
         usleep(200000);
         uint32_t now = (uint32_t)time(NULL);
@@ -222,9 +217,7 @@ void *session_timeout_thread(void *arg)
             if (opt_verbosity > 2)
                 syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
 
-            pthread_mutex_lock(&g_rabbitmq_mutex);
             rabbitmq_publish_session_stop(&g_rabbitmq, &node->entry);
-            pthread_mutex_unlock(&g_rabbitmq_mutex);
             HASH_DEL(g_session_map, node);
 
             if (g_session_count > 0)
@@ -479,9 +472,7 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         int rc = session_insert(pSession);
         if (pSession->u8AccountStatusType == SESSION_UPDATE)
         {
-            pthread_mutex_lock(&g_rabbitmq_mutex);
             rabbitmq_publish_session_start(&g_rabbitmq, pSession);
-            pthread_mutex_unlock(&g_rabbitmq_mutex);
         }
         if (rc == 0)
         {
