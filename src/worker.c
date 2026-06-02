@@ -4,7 +4,7 @@ TaskQueue global_queue __attribute__((aligned(64)));
 pthread_t worker_threads[MAX_THREADS];
 pthread_t stats_worker_threads;
 pthread_t timeout_tid;
-pthread_t sync_tid;
+pthread_t stats_tid;
 atomic_uint_fast64_t g_inflight_tasks = 0;
 
 void queue_init(TaskQueue *q)
@@ -229,17 +229,23 @@ void *worker_thread(void *arg)
                 {
                     printUserSession(&session);
                 }
-                // switch (session.u8AccountStatusType)
-                // {
-                // case SESSION_START:
-                //     rabbitmq_publish_session_start(&g_rabbitmq, &session);
-                //     break;
-                // case SESSION_STOP:
-                //     rabbitmq_publish_session_stop(&g_rabbitmq, &session);
-                //     break;
-                // default:
-                //     break;
-                // }
+                switch (session.u8AccountStatusType)
+                {
+                case SESSION_START:
+                {
+                    rabbitmq_publish_session_start(&g_rabbitmq, &session);
+                    rabbitmq_publish_session_sync(&g_rabbitmq, &session);
+                }
+                break;
+                case SESSION_STOP:
+                {
+                    rabbitmq_publish_session_stop(&g_rabbitmq, &session);
+                    rabbitmq_publish_session_delete(&g_rabbitmq, session.acAccountSessionId);
+                }
+                break;
+                default:
+                    break;
+                }
             }
             else
             {
@@ -289,7 +295,7 @@ void start_worker_threads(void)
         pthread_create(&worker_threads[i], NULL, worker_thread, &cores[i]);
     }
     pthread_create(&timeout_tid, NULL, session_timeout_thread, NULL);
-    pthread_create(&sync_tid, NULL, rabbitmq_stats_worker, NULL);
+    pthread_create(&stats_tid, NULL, rabbitmq_stats_worker, NULL);
     if (opt_verbosity > 1)
         pthread_create(&stats_worker_threads, NULL, session_stats_thread, (void *)(intptr_t)0);
 }

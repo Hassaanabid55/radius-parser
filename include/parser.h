@@ -46,28 +46,19 @@ static inline int session_insert(const UserSessionInfo *s)
     memset(node, 0, sizeof(*node));
     memcpy(node->acAccountSessionId, s->acAccountSessionId, sizeof(node->acAccountSessionId) - 1);
     node->entry = *s;
-    int is_new = 0;
     pthread_mutex_lock(&g_session_mutex);
     SessionNode *existing = NULL;
     HASH_FIND_STR(g_session_map, node->acAccountSessionId, existing);
-
     if (existing)
     {
         existing->entry = *s;
+        pthread_mutex_unlock(&g_session_mutex);
         free(node);
+        return 1;
     }
-    else
-    {
-        HASH_ADD_STR(g_session_map, acAccountSessionId, node);
-        is_new = 1;
-    }
-
+    HASH_ADD_STR(g_session_map, acAccountSessionId, node);
     pthread_mutex_unlock(&g_session_mutex);
-    /* OUTSIDE LOCK → safe */
-    if (is_new)
-        rabbitmq_publish_session_sync(&g_rabbitmq, s);
-
-    return is_new ? 0 : 1;
+    return 0;
 }
 
 static inline void session_delete(SessionNode *node)
@@ -75,15 +66,11 @@ static inline void session_delete(SessionNode *node)
     if (!node)
         return;
 
-    char id_copy[SESSION_ID_MAX_LEN];
-    strncpy(id_copy, node->acAccountSessionId, sizeof(id_copy));
-
     pthread_mutex_lock(&g_session_mutex);
     HASH_DEL(g_session_map, node);
     pthread_mutex_unlock(&g_session_mutex);
     free(node);
     /* OUTSIDE LOCK */
-    rabbitmq_publish_session_delete(&g_rabbitmq, id_copy);
 }
 
 void session_print_stats();

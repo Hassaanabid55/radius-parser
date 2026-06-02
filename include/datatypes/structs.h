@@ -1,5 +1,16 @@
 #include "datatypes/macros.h"
 
+extern uint64_t g_session_count;
+extern uint64_t g_session_inserts;
+extern uint64_t g_session_deletes;
+extern uint64_t g_session_updates;
+extern uint64_t cgnat_table_size;
+extern uint64_t wl_table_size;
+extern uint64_t g_session_total_restores;
+extern uint64_t g_session_total_starts;
+extern uint64_t g_session_total_updates;
+extern uint64_t g_session_total_deletes;
+
 /* =========================================================
  * CGNAT
  * ========================================================= */
@@ -28,7 +39,7 @@ typedef struct CgnatNode
 typedef struct
 {
     char msisdn[32];
-    bool status;
+    bool status : 1;
 
 } WhitelistInfo;
 
@@ -121,7 +132,9 @@ typedef struct
 {
     amqp_connection_state_t conn;
     amqp_socket_t *socket;
-    int channel;
+    int pub_channel;
+    int stats_channel;
+    int sync_channel;
     RabbitMQConfig cfg;
 
 } RabbitMQClient;
@@ -129,12 +142,6 @@ typedef struct
 /* =========================================================
  * RABBITMQ BOOTSTRAP
  * ========================================================= */
-
-typedef struct
-{
-    int sessions_loaded;
-} RabbitMQBootstrapState;
-
 typedef void (*RabbitMQSyncHandler)(
     const char *routing_key,
     const void *body,
@@ -144,7 +151,7 @@ typedef void (*RabbitMQSyncHandler)(
 typedef struct RabbitMQBootstrapCtx
 {
     SessionNode **session_map;
-    RabbitMQBootstrapState *state;
+    int sessions_loaded;
 
 } RabbitMQBootstrapCtx;
 

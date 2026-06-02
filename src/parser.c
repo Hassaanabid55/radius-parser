@@ -1,5 +1,16 @@
 #include "parser.h"
 
+uint64_t g_session_count = 0;
+uint64_t g_session_inserts = 0;
+uint64_t g_session_deletes = 0;
+uint64_t g_session_updates = 0;
+uint64_t cgnat_table_size = 0;
+uint64_t wl_table_size = 0;
+uint64_t g_session_total_restores = 0;
+uint64_t g_session_total_starts = 0;
+uint64_t g_session_total_updates = 0;
+uint64_t g_session_total_deletes = 0;
+
 static uint8_t shard = 0;
 
 void session_print_stats()
@@ -14,6 +25,7 @@ void session_print_stats()
     syslog(LOG_INFO, "Total Starts             : %lu", g_session_total_starts);
     syslog(LOG_INFO, "Total Updates            : %lu", g_session_total_updates);
     syslog(LOG_INFO, "Total Deletes            : %lu", g_session_total_deletes);
+    syslog(LOG_INFO, "Total Restores           : %lu", g_session_total_restores);
 
     if (g_session_count > 0)
     {
@@ -218,6 +230,8 @@ void *session_timeout_thread(void *arg)
                 syslog(LOG_INFO, "Session expired: %s", node->acAccountSessionId);
 
             rabbitmq_publish_session_stop(&g_rabbitmq, &node->entry);
+            rabbitmq_publish_session_delete(&g_rabbitmq, node->acAccountSessionId);
+
             HASH_DEL(g_session_map, node);
 
             if (g_session_count > 0)
@@ -473,6 +487,7 @@ int readRadiusAttributes(const RadiusPacket *radiusPkt, UserSessionInfo *pSessio
         if (pSession->u8AccountStatusType == SESSION_UPDATE)
         {
             rabbitmq_publish_session_start(&g_rabbitmq, pSession);
+            rabbitmq_publish_session_sync(&g_rabbitmq, pSession);
         }
         if (rc == 0)
         {

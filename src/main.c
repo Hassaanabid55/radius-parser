@@ -527,8 +527,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    RabbitMQBootstrapState mq_state;
-
     RabbitMQConfig cfg;
     safe_strcpy(cfg.host, sizeof(cfg.host), opt_rabbitmq_host);
     safe_strcpy(cfg.vhost, sizeof(cfg.vhost), opt_rabbitmq_vhost);
@@ -555,7 +553,7 @@ int main(int argc, char *argv[])
     /* =========================
      DATA LOADING
      ========================= */
-    rabbitmq_bootstrap_state(&g_rabbitmq, &g_session_map, &mq_state);
+    rabbitmq_bootstrap_state(&g_rabbitmq, &g_session_map);
 
     if (db_is_enabled())
     {
@@ -634,9 +632,11 @@ int main(int argc, char *argv[])
         pthread_join(worker_threads[i], NULL);
     }
     pthread_join(timeout_tid, NULL);
-    pthread_join(sync_tid, NULL);
+    pthread_join(stats_tid, NULL);
     if (opt_verbosity > 1)
         pthread_join(stats_worker_threads, NULL);
+
+    syslog(LOG_INFO, "All threads exited, performing cleanup");
 
     db_close();
     rabbitmq_cleanup(&g_rabbitmq);

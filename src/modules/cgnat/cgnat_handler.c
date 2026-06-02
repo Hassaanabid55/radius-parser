@@ -3,16 +3,6 @@
 CgnatNode *g_cgnat_map = NULL;
 pthread_mutex_t g_cgnat_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-uint64_t g_session_count = 0;
-uint64_t g_session_inserts = 0;
-uint64_t g_session_deletes = 0;
-uint64_t g_session_updates = 0;
-uint64_t cgnat_table_size = 0;
-uint64_t wl_table_size = 0;
-uint64_t g_session_total_starts = 0;
-uint64_t g_session_total_updates = 0;
-uint64_t g_session_total_deletes = 0;
-
 /* =========================
  LOAD FROM CSV
  ========================= */
