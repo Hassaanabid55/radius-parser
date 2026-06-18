@@ -96,6 +96,7 @@ void cleanup(void)
     global_queue.shutdown = true;
     pthread_cond_broadcast(&global_queue.not_empty);
     pthread_cond_broadcast(&global_queue.not_full);
+    pthread_cond_broadcast(&g_publish_queue.cond);
     pthread_mutex_unlock(&global_queue.mutex);
     if (g_pcap_handle)
     {
@@ -632,7 +633,8 @@ int main(int argc, char *argv[])
         pthread_join(worker_threads[i], NULL);
     }
     pthread_join(timeout_tid, NULL);
-    pthread_join(stats_tid, NULL);
+    pthread_join(rabbit_pub_tid, NULL);
+    // pthread_join(stats_tid, NULL);
     if (opt_verbosity > 1)
         pthread_join(stats_worker_threads, NULL);
 

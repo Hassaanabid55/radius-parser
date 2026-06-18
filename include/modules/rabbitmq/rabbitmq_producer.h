@@ -2,8 +2,10 @@
 
 /* globals */
 extern RabbitMQClient g_rabbitmq;
-extern pthread_mutex_t g_rabbitmq_mutex;
-extern volatile sig_atomic_t g_running;
+extern RabbitPublishQueue g_publish_queue;
+// extern pthread_mutex_t g_rabbitmq_sync_mutex;
+// extern pthread_mutex_t g_rabbitmq_pub_mutex;
+// extern pthread_mutex_t g_rabbitmq_stat_mutex;
 
 /* -------- lifecycle -------- */
 int rabbitmq_init(const RabbitMQConfig *cfg);
@@ -19,4 +21,5 @@ int rabbitmq_publish_session_delete(RabbitMQClient *c, const char *session_id);
 int rabbitmq_bootstrap_state(RabbitMQClient *client, SessionNode **session_map);
 
 /* -------- permanent consumer threads (to be launched by main) -------- */
+void *rabbitmq_publish_worker(void *arg);
 void *rabbitmq_stats_worker(void *arg);

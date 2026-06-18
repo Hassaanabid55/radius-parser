@@ -6,6 +6,7 @@ extern TaskQueue global_queue __attribute__((aligned(64)));
 extern pthread_t worker_threads[MAX_THREADS];
 extern pthread_t stats_worker_threads;
 extern pthread_t timeout_tid;
+extern pthread_t rabbit_pub_tid;
 extern pthread_t stats_tid;
 extern int cores[MAX_CORE_COUNT];
 extern uint16_t core_count;

@@ -155,6 +155,26 @@ typedef struct RabbitMQBootstrapCtx
 
 } RabbitMQBootstrapCtx;
 
+typedef struct RabbitPublishEvent
+{
+    char routing_key[64];
+    
+    UserSessionInfo session;
+    char session_id[128];
+
+    size_t len;
+    struct RabbitPublishEvent *next;
+} RabbitPublishEvent;
+
+typedef struct
+{
+    RabbitPublishEvent *head;
+    RabbitPublishEvent *tail;
+
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} RabbitPublishQueue;
+
 /* =========================================================
  * DATABASE CONFIGURATION
  * ========================================================= */

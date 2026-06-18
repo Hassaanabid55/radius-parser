@@ -4,6 +4,7 @@ TaskQueue global_queue __attribute__((aligned(64)));
 pthread_t worker_threads[MAX_THREADS];
 pthread_t stats_worker_threads;
 pthread_t timeout_tid;
+pthread_t rabbit_pub_tid;
 pthread_t stats_tid;
 atomic_uint_fast64_t g_inflight_tasks = 0;
 
@@ -294,6 +295,7 @@ void start_worker_threads(void)
     {
         pthread_create(&worker_threads[i], NULL, worker_thread, &cores[i]);
     }
+    pthread_create(&rabbit_pub_tid, NULL, rabbitmq_publish_worker, NULL);
     pthread_create(&timeout_tid, NULL, session_timeout_thread, NULL);
     pthread_create(&stats_tid, NULL, rabbitmq_stats_worker, NULL);
     if (opt_verbosity > 1)

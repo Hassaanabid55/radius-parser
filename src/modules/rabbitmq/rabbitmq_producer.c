@@ -2,7 +2,10 @@
 
 /* ================= GLOBALS ================= */
 RabbitMQClient g_rabbitmq;
-pthread_mutex_t g_rabbitmq_mutex = PTHREAD_MUTEX_INITIALIZER;
+RabbitPublishQueue g_publish_queue;
+// pthread_mutex_t g_rabbitmq_sync_mutex = PTHREAD_MUTEX_INITIALIZER;
+// pthread_mutex_t g_rabbitmq_pub_mutex = PTHREAD_MUTEX_INITIALIZER;
+// pthread_mutex_t g_rabbitmq_stat_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* external session map */
 extern SessionNode *g_session_map;
@@ -12,7 +15,7 @@ extern volatile int g_running;
 /* =========================================================
    INTERNAL HELPERS
    ========================================================= */
-   
+
 /* -------- thread‑safe publish -------- */
 int rabbitmq_publish(RabbitMQClient *c, const char *routing_key, const void *data, size_t len)
 {
@@ -29,9 +32,7 @@ int rabbitmq_publish(RabbitMQClient *c, const char *routing_key, const void *dat
     props._flags = AMQP_BASIC_DELIVERY_MODE_FLAG;
     props.delivery_mode = 2;
 
-    pthread_mutex_lock(&g_rabbitmq_mutex);
     int rc = amqp_basic_publish(c->conn, c->pub_channel, amqp_cstring_bytes(c->cfg.exchange), amqp_cstring_bytes(routing_key), 0, 0, &props, body);
-    pthread_mutex_unlock(&g_rabbitmq_mutex);
 
     return (rc == 0);
 }
@@ -43,6 +44,8 @@ int rabbitmq_init(const RabbitMQConfig *cfg)
 {
     memset(&g_rabbitmq, 0, sizeof(g_rabbitmq));
     g_rabbitmq.cfg = *cfg;
+
+    rabbitmq_publish_queue_init();
 
     g_rabbitmq.conn = amqp_new_connection();
     amqp_socket_t *socket = amqp_tcp_socket_new(g_rabbitmq.conn);
@@ -74,6 +77,14 @@ int rabbitmq_init(const RabbitMQConfig *cfg)
     return 1;
 }
 
+void rabbitmq_publish_queue_init(void)
+{
+    memset(&g_publish_queue, 0, sizeof(g_publish_queue));
+
+    pthread_mutex_init(&g_publish_queue.mutex, NULL);
+    pthread_cond_init(&g_publish_queue.cond, NULL);
+}
+
 /* =========================================================
    CLEANUP
    ========================================================= */
@@ -82,36 +93,84 @@ void rabbitmq_cleanup(RabbitMQClient *c)
     if (!c || !c->conn)
         return;
 
-    pthread_mutex_lock(&g_rabbitmq_mutex);
-
     amqp_channel_close(c->conn, c->pub_channel, AMQP_REPLY_SUCCESS);
+
     amqp_channel_close(c->conn, c->stats_channel, AMQP_REPLY_SUCCESS);
+
     amqp_channel_close(c->conn, c->sync_channel, AMQP_REPLY_SUCCESS);
 
     amqp_connection_close(c->conn, AMQP_REPLY_SUCCESS);
     amqp_destroy_connection(c->conn);
-
-    pthread_mutex_unlock(&g_rabbitmq_mutex);
 }
 
 /* =========================================================
    HIGH‑LEVEL PUBLISH
    ========================================================= */
+int rabbitmq_enqueue(
+    const char *routing_key,
+    const void *data,
+    size_t len)
+{
+    RabbitPublishEvent *evt =
+        calloc(1, sizeof(*evt));
+
+    if (!evt)
+        return 0;
+
+    strcpy(evt->routing_key, routing_key);
+
+    evt->len = len;
+
+    if (strcmp(routing_key, RK_SYNC_SESSION_DELETE) == 0)
+    {
+        strncpy(
+            evt->session_id,
+            (const char *)data,
+            sizeof(evt->session_id) - 1);
+    }
+    else
+    {
+        memcpy(
+            &evt->session,
+            data,
+            sizeof(UserSessionInfo));
+    }
+
+    pthread_mutex_lock(&g_publish_queue.mutex);
+
+    if (!g_publish_queue.tail)
+    {
+        g_publish_queue.head =
+            g_publish_queue.tail = evt;
+    }
+    else
+    {
+        g_publish_queue.tail->next = evt;
+        g_publish_queue.tail = evt;
+    }
+
+    pthread_cond_signal(&g_publish_queue.cond);
+
+    pthread_mutex_unlock(&g_publish_queue.mutex);
+
+    return 1;
+}
+
 int rabbitmq_publish_session_start(RabbitMQClient *c, const UserSessionInfo *s)
 {
-    return rabbitmq_publish(c, RK_SESSION_START, s, sizeof(*s));
+    return rabbitmq_enqueue(RK_SESSION_START, s, sizeof(*s));
 }
 int rabbitmq_publish_session_stop(RabbitMQClient *c, const UserSessionInfo *s)
 {
-    return rabbitmq_publish(c, RK_SESSION_STOP, s, sizeof(*s));
+    return rabbitmq_enqueue(RK_SESSION_STOP, s, sizeof(*s));
 }
 int rabbitmq_publish_session_sync(RabbitMQClient *c, const UserSessionInfo *s)
 {
-    return rabbitmq_publish(c, RK_SYNC_SESSION, s, sizeof(*s));
+    return rabbitmq_enqueue(RK_SYNC_SESSION, s, sizeof(*s));
 }
 int rabbitmq_publish_session_delete(RabbitMQClient *c, const char *session_id)
 {
-    return rabbitmq_publish(c, RK_SYNC_SESSION_DELETE, session_id, strlen(session_id) + 1);
+    return rabbitmq_enqueue(RK_SYNC_SESSION_DELETE, session_id, strlen(session_id) + 1);
 }
 
 /* =========================================================
@@ -177,10 +236,8 @@ static int drain_sync_queue(
     RabbitMQSyncHandler handler,
     void *ctx)
 {
-    pthread_mutex_lock(&g_rabbitmq_mutex);
     amqp_basic_consume(c->conn, c->sync_channel, amqp_cstring_bytes(queue), amqp_empty_bytes, 1, 0, 0, amqp_empty_table);
     amqp_rpc_reply_t reply = amqp_get_rpc_reply(c->conn);
-    pthread_mutex_unlock(&g_rabbitmq_mutex);
 
     if (reply.reply_type != AMQP_RESPONSE_NORMAL)
         return -1;
@@ -188,26 +245,27 @@ static int drain_sync_queue(
     while (1)
     {
         amqp_envelope_t env;
-        struct timeval timeout = {1, 0};
+        struct timeval timeout = {2, 0};
 
-        pthread_mutex_lock(&g_rabbitmq_mutex);
         amqp_rpc_reply_t res = amqp_consume_message(c->conn, &env, &timeout, 0);
-        pthread_mutex_unlock(&g_rabbitmq_mutex);
 
         if (res.reply_type == AMQP_RESPONSE_NONE)
+        {
+            syslog(LOG_INFO, "Finished draining queue 1: %s", queue);
             break;
-
+        }
         if (res.reply_type != AMQP_RESPONSE_NORMAL)
+        {
+            syslog(LOG_INFO, "Finished draining queue 2: %s with response: %d and library error: %d", queue, res.reply_type, res.library_error);
             break;
+        }
 
         handler(queue, env.message.body.bytes, env.message.body.len, ctx);
 
         amqp_destroy_envelope(&env);
     }
 
-    pthread_mutex_lock(&g_rabbitmq_mutex);
     amqp_basic_cancel(c->conn, c->sync_channel, amqp_empty_bytes);
-    pthread_mutex_unlock(&g_rabbitmq_mutex);
 
     return 0;
 }
@@ -230,6 +288,52 @@ int rabbitmq_bootstrap_state(RabbitMQClient *client, SessionNode **session_map)
     return 0;
 }
 
+void *rabbitmq_publish_worker(void *arg)
+{
+    while (g_running)
+    {
+        pthread_mutex_lock(&g_publish_queue.mutex);
+
+        while (!g_publish_queue.head && g_running)
+        {
+            pthread_cond_wait(
+                &g_publish_queue.cond,
+                &g_publish_queue.mutex);
+        }
+
+        if (!g_running)
+        {
+            pthread_mutex_unlock(
+                &g_publish_queue.mutex);
+            break;
+        }
+
+        RabbitPublishEvent *evt =
+            g_publish_queue.head;
+
+        g_publish_queue.head =
+            evt->next;
+
+        if (!g_publish_queue.head)
+            g_publish_queue.tail = NULL;
+
+        pthread_mutex_unlock(
+            &g_publish_queue.mutex);
+
+        rabbitmq_publish(
+            &g_rabbitmq,
+            evt->routing_key,
+            strcmp(evt->routing_key, RK_SYNC_SESSION_DELETE) == 0
+                ? (void *)evt->session_id
+                : (void *)&evt->session,
+            evt->len);
+
+        free(evt);
+    }
+
+    return NULL;
+}
+
 /* =========================================================
    STATS CONSUMER (permanent thread)
    ========================================================= */
@@ -240,10 +344,8 @@ void *rabbitmq_stats_worker(void *arg)
 
 RECONNECT:
 
-    pthread_mutex_lock(&g_rabbitmq_mutex);
     amqp_basic_consume(c->conn, c->stats_channel, amqp_cstring_bytes(RK_SESSION_STATS), amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
     amqp_rpc_reply_t reply = amqp_get_rpc_reply(c->conn);
-    pthread_mutex_unlock(&g_rabbitmq_mutex);
 
     if (reply.reply_type != AMQP_RESPONSE_NORMAL)
     {
